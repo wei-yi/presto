@@ -131,7 +131,12 @@ import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimap;
+import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
+import org.apache.commons.lang3.StringUtils;
 
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -881,8 +886,32 @@ class StatementAnalyzer
                     throw new SemanticException(VIEW_IS_RECURSIVE, table, "View is recursive");
                 }
                 ViewDefinition view = optionalView.get();
-
-                Query query = parseView(view.getOriginalSql(), name, table);
+                String origintSql = view.getOriginalSql();
+                String dbcloudRegiex = "(\")*get_dbcloud_permission(\")*\\((.)+,(.)+,(\\s)*'game_id'(\\s)*,(.)+\\)(\\s)*=(\\s)*1";
+                String dbcloudPermission = session.getSystemProperties().get("dbcloud_permission");
+                if (StringUtils.isNoneBlank(dbcloudPermission) && dbcloudPermission.equals("{}")) {
+                    origintSql = origintSql.replaceAll(dbcloudRegiex, "1=1");
+                }
+                else if (StringUtils.isNoneBlank(dbcloudPermission)) {
+                    try {
+                        dbcloudPermission = URLDecoder.decode(dbcloudPermission, "utf-8");
+                        String var = name.getSchemaName() + "." + name.getObjectName() + "." + "auth_permission" + "_" + "game_id";
+                        JsonCodecFactory codecFactory = new JsonCodecFactory();
+                        JsonCodec<Map<String, String>> dbcloudPermissionCode = codecFactory.mapJsonCodec(String.class, String.class);
+                        Map<String, String> jsonObj = dbcloudPermissionCode.fromJson(dbcloudPermission);
+                        String values = jsonObj.get(var);
+                        if (StringUtils.isNotBlank(values)) {
+                            values = "'" + values + "'";
+                            String premissionStatement = " CAST(game_id AS varchar) IN (" + values.replaceAll("\\|", "','") + ")";
+                            origintSql = origintSql.replaceAll(dbcloudRegiex, premissionStatement);
+                        }
+                    }
+                    catch (UnsupportedEncodingException e) {
+                        //Auto-generated catch bloc
+                        e.printStackTrace();
+                    }
+                }
+                Query query = parseView(origintSql, name, table);
 
                 analysis.registerNamedQuery(table, query);
 
