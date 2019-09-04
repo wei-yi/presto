@@ -36,11 +36,11 @@ import com.facebook.presto.spi.PrestoWarning;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.connector.ConnectorPartitionHandle;
-import com.facebook.presto.spi.connector.ConnectorPartitioningHandle;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.ValuesNode;
 import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.relation.ConstantExpression;
 import com.facebook.presto.spi.relation.RowExpression;
@@ -63,11 +63,11 @@ import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SimplePlanRewriter;
 import com.facebook.presto.sql.planner.plan.StatisticsWriterNode;
 import com.facebook.presto.sql.planner.plan.TableFinishNode;
+import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode.CreateHandle;
 import com.facebook.presto.sql.planner.plan.TableWriterNode.InsertHandle;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
-import com.facebook.presto.sql.planner.plan.ValuesNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.facebook.presto.sql.planner.sanity.PlanSanityChecker;
 import com.google.common.collect.ImmutableList;
@@ -86,10 +86,13 @@ import java.util.OptionalInt;
 import java.util.Set;
 
 import static com.facebook.presto.SystemSessionProperties.getQueryMaxStageCount;
+import static com.facebook.presto.SystemSessionProperties.getTaskWriterCount;
 import static com.facebook.presto.SystemSessionProperties.isDynamicScheduleForGroupedExecution;
 import static com.facebook.presto.SystemSessionProperties.isForceSingleNodeOutput;
 import static com.facebook.presto.SystemSessionProperties.isGroupedExecutionForEligibleTableScansEnabled;
 import static com.facebook.presto.SystemSessionProperties.isRecoverableGroupedExecutionEnabled;
+import static com.facebook.presto.SystemSessionProperties.isTableWriterMergeOperatorEnabled;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.spi.StandardErrorCode.QUERY_HAS_TOO_MANY_STAGES;
 import static com.facebook.presto.spi.StandardWarningCode.TOO_MANY_STAGES;
 import static com.facebook.presto.spi.connector.ConnectorCapabilities.SUPPORTS_PARTITION_COMMIT;
@@ -98,10 +101,11 @@ import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NO
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.sql.planner.SchedulingOrderVisitor.scheduleOrder;
-import static com.facebook.presto.sql.planner.SymbolsExtractor.extractOutputVariables;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.COORDINATOR_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
+import static com.facebook.presto.sql.planner.SystemPartitioningHandle.isCompatibleSystemPartitioning;
+import static com.facebook.presto.sql.planner.VariablesExtractor.extractOutputVariables;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.LOCAL;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_MATERIALIZED;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_STREAMING;
@@ -128,7 +132,7 @@ import static java.util.function.Function.identity;
  */
 public class PlanFragmenter
 {
-    private static final String TOO_MANY_STAGES_MESSAGE = "If the query contains multiple DISTINCTs, please set the 'use_mark_distinct' session property to false. " +
+    public static final String TOO_MANY_STAGES_MESSAGE = "If the query contains multiple DISTINCTs, please set the 'use_mark_distinct' session property to false. " +
             "If the query contains multiple CTEs that are referenced more than once, please create temporary table(s) for one or more of the CTEs.";
 
     private final Metadata metadata;
@@ -147,7 +151,6 @@ public class PlanFragmenter
 
     public SubPlan createSubPlans(Session session, Plan plan, boolean forceSingleNode, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
     {
-        SymbolAllocator symbolAllocator = new SymbolAllocator(plan.getTypes().allTypes());
         Fragmenter fragmenter = new Fragmenter(
                 session,
                 metadata,
@@ -156,7 +159,7 @@ public class PlanFragmenter
                 warningCollector,
                 sqlParser,
                 idAllocator,
-                new SymbolAllocator(plan.getTypes().allTypes()),
+                new PlanVariableAllocator(plan.getTypes().allVariables()),
                 getTableWriterNodeIds(plan.getRoot()));
 
         FragmentProperties properties = new FragmentProperties(new PartitioningScheme(
@@ -220,7 +223,7 @@ public class PlanFragmenter
                  *   - Input connectors supports split source rewind
                  *   - Output connectors supports partition commit
                  *   - Bucket node map uses dynamic scheduling
-                 *   - Output table is partitioned
+                 *   - One table writer per task
                  */
                 boolean recoverable = isRecoverableGroupedExecutionEnabled(session) &&
                         parentContainsTableFinish &&
@@ -312,12 +315,11 @@ public class PlanFragmenter
         private final Session session;
         private final Metadata metadata;
         private final PlanNodeIdAllocator idAllocator;
-        private final SymbolAllocator symbolAllocator;
+        private final PlanVariableAllocator variableAllocator;
         private final StatsAndCosts statsAndCosts;
         private final PlanSanityChecker planSanityChecker;
         private final WarningCollector warningCollector;
         private final SqlParser sqlParser;
-        private final LiteralEncoder literalEncoder;
         private final Set<PlanNodeId> outputTableWriterNodeIds;
         private int nextFragmentId = ROOT_FRAGMENT_ID + 1;
 
@@ -329,7 +331,7 @@ public class PlanFragmenter
                 WarningCollector warningCollector,
                 SqlParser sqlParser,
                 PlanNodeIdAllocator idAllocator,
-                SymbolAllocator symbolAllocator,
+                PlanVariableAllocator variableAllocator,
                 Set<PlanNodeId> outputTableWriterNodeIds)
         {
             this.session = requireNonNull(session, "session is null");
@@ -339,8 +341,7 @@ public class PlanFragmenter
             this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
             this.sqlParser = requireNonNull(sqlParser, "sqlParser is null");
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
-            this.symbolAllocator = requireNonNull(symbolAllocator, "symbolAllocator is null");
-            this.literalEncoder = new LiteralEncoder(metadata.getBlockEncodingSerde());
+            this.variableAllocator = requireNonNull(variableAllocator, "variableAllocator is null");
             this.outputTableWriterNodeIds = ImmutableSet.copyOf(requireNonNull(outputTableWriterNodeIds, "outputTableWriterNodeIds is null"));
         }
 
@@ -507,11 +508,13 @@ public class PlanFragmenter
             checkArgument(exchange.getScope() == REMOTE_MATERIALIZED, "Unexpected exchange scope: %s", exchange.getScope());
 
             PartitioningScheme partitioningScheme = exchange.getPartitioningScheme();
-            checkArgument(!partitioningScheme.getHashColumn().isPresent(), "precomputed hashes are not supported in materializing exchanges");
 
             PartitioningHandle partitioningHandle = partitioningScheme.getPartitioning().getHandle();
             ConnectorId connectorId = partitioningHandle.getConnectorId()
-                    .orElseThrow(() -> new IllegalArgumentException("Unsupported partitioning handle: " + partitioningHandle));
+                    .orElseThrow(() -> new PrestoException(
+                            NOT_SUPPORTED,
+                            "The \"partitioning_provider_catalog\" session property must be set to enable the exchanges materialization. " +
+                                    "The catalog must support providing a custom partitioning and storing temporary tables."));
 
             Partitioning partitioning = partitioningScheme.getPartitioning();
             PartitioningVariableAssignments partitioningVariableAssignments = assignPartitioningVariables(partitioning);
@@ -522,11 +525,24 @@ public class PlanFragmenter
                     .collect(toImmutableList());
             PartitioningMetadata partitioningMetadata = new PartitioningMetadata(partitioningHandle, partitionColumns);
 
-            TableHandle temporaryTableHandle = metadata.createTemporaryTable(
-                    session,
-                    connectorId.getCatalogName(),
-                    ImmutableList.copyOf(variableToColumnMap.values()),
-                    Optional.of(partitioningMetadata));
+            TableHandle temporaryTableHandle;
+
+            try {
+                temporaryTableHandle = metadata.createTemporaryTable(
+                        session,
+                        connectorId.getCatalogName(),
+                        ImmutableList.copyOf(variableToColumnMap.values()),
+                        Optional.of(partitioningMetadata));
+            }
+            catch (PrestoException e) {
+                if (e.getErrorCode().equals(NOT_SUPPORTED.toErrorCode())) {
+                    throw new PrestoException(
+                            NOT_SUPPORTED,
+                            format("Catalog \"%s\" does not support temporary tables. The exchange cannot be materialized.", connectorId.getCatalogName()),
+                            e);
+                }
+                throw e;
+            }
 
             TableScanNode scan = createTemporaryTableScan(
                     temporaryTableHandle,
@@ -565,7 +581,7 @@ public class PlanFragmenter
                 VariableReferenceExpression variable;
                 if (argumentBinding.isConstant()) {
                     ConstantExpression constant = argumentBinding.getConstant();
-                    variable = symbolAllocator.newVariable("constant_partition", constant.getType());
+                    variable = variableAllocator.newVariable("constant_partition", constant.getType());
                     constants.put(variable, constant);
                 }
                 else {
@@ -621,8 +637,7 @@ public class PlanFragmenter
                     outputVariables,
                     assignments,
                     TupleDomain.all(),
-                    TupleDomain.all(),
-                    true);
+                    TupleDomain.all());
         }
 
         private TableFinishNode createTemporaryTableWrite(
@@ -686,6 +701,52 @@ public class PlanFragmenter
             SchemaTableName temporaryTableName = metadata.getTableMetadata(session, tableHandle).getTable();
             InsertHandle insertHandle = new InsertHandle(insertTableHandle, new SchemaTableName(temporaryTableName.getSchemaName(), temporaryTableName.getTableName()));
 
+            TableWriterNode tableWriter = new TableWriterNode(
+                    idAllocator.getNextId(),
+                    gatheringExchange(
+                            idAllocator.getNextId(),
+                            LOCAL,
+                            new ExchangeNode(
+                                    idAllocator.getNextId(),
+                                    REPARTITION,
+                                    REMOTE_STREAMING,
+                                    new PartitioningScheme(
+                                            Partitioning.create(partitioningHandle, partitioningVariables),
+                                            outputs,
+                                            Optional.empty(),
+                                            false,
+                                            Optional.empty()),
+                                    sources,
+                                    inputs,
+                                    Optional.empty())),
+                    insertHandle,
+                    variableAllocator.newVariable("partialrows", BIGINT),
+                    variableAllocator.newVariable("partialfragments", VARBINARY),
+                    variableAllocator.newVariable("partialtablecommitcontext", VARBINARY),
+                    outputs,
+                    outputColumnNames,
+                    Optional.of(new PartitioningScheme(
+                            Partitioning.create(partitioningHandle, partitioningVariables),
+                            outputs,
+                            Optional.empty(),
+                            false,
+                            Optional.empty())),
+                    Optional.empty());
+
+            PlanNode tableWriterMerge = tableWriter;
+            if (isTableWriterMergeOperatorEnabled(session)) {
+                tableWriterMerge = new TableWriterMergeNode(
+                        idAllocator.getNextId(),
+                        gatheringExchange(
+                                idAllocator.getNextId(),
+                                LOCAL,
+                                tableWriter),
+                        variableAllocator.newVariable("intermediaterows", BIGINT),
+                        variableAllocator.newVariable("intermediatefragments", VARBINARY),
+                        variableAllocator.newVariable("intermediatetablecommitcontext", VARBINARY),
+                        Optional.empty());
+            }
+
             return new TableFinishNode(
                     idAllocator.getNextId(),
                     gatheringExchange(
@@ -694,40 +755,9 @@ public class PlanFragmenter
                             gatheringExchange(
                                     idAllocator.getNextId(),
                                     REMOTE_STREAMING,
-                                    new TableWriterNode(
-                                            idAllocator.getNextId(),
-                                            gatheringExchange(
-                                                    idAllocator.getNextId(),
-                                                    LOCAL,
-                                                    new ExchangeNode(
-                                                            idAllocator.getNextId(),
-                                                            REPARTITION,
-                                                            REMOTE_STREAMING,
-                                                            new PartitioningScheme(
-                                                                    Partitioning.create(partitioningHandle, partitioningVariables),
-                                                                    outputs,
-                                                                    Optional.empty(),
-                                                                    false,
-                                                                    Optional.empty()),
-                                                            sources,
-                                                            inputs,
-                                                            Optional.empty())),
-                                            insertHandle,
-                                            symbolAllocator.newVariable("partialrows", BIGINT),
-                                            symbolAllocator.newVariable("fragment", VARBINARY),
-                                            symbolAllocator.newVariable("tablecommitcontext", VARBINARY),
-                                            outputs,
-                                            outputColumnNames,
-                                            Optional.of(new PartitioningScheme(
-                                                    Partitioning.create(partitioningHandle, partitioningVariables),
-                                                    outputs,
-                                                    Optional.empty(),
-                                                    false,
-                                                    Optional.empty())),
-                                            Optional.empty(),
-                                            Optional.empty()))),
+                                    tableWriterMerge)),
                     insertHandle,
-                    symbolAllocator.newVariable("rows", BIGINT),
+                    variableAllocator.newVariable("rows", BIGINT),
                     Optional.empty(),
                     Optional.empty());
         }
@@ -785,7 +815,7 @@ public class PlanFragmenter
 
             PartitioningHandle currentPartitioning = this.partitioningHandle.get();
 
-            if (isCompatibleSystemPartitioning(distribution)) {
+            if (isCompatibleSystemPartitioning(currentPartitioning, distribution)) {
                 return this;
             }
 
@@ -817,18 +847,6 @@ public class PlanFragmenter
                     "Cannot set distribution to %s. Already set to %s",
                     distribution,
                     this.partitioningHandle));
-        }
-
-        private boolean isCompatibleSystemPartitioning(PartitioningHandle distribution)
-        {
-            ConnectorPartitioningHandle currentHandle = partitioningHandle.get().getConnectorHandle();
-            ConnectorPartitioningHandle distributionHandle = distribution.getConnectorHandle();
-            if ((currentHandle instanceof SystemPartitioningHandle) &&
-                    (distributionHandle instanceof SystemPartitioningHandle)) {
-                return ((SystemPartitioningHandle) currentHandle).getPartitioning() ==
-                        ((SystemPartitioningHandle) distributionHandle).getPartitioning();
-            }
-            return false;
         }
 
         public FragmentProperties setCoordinatorOnlyDistribution()
@@ -1032,7 +1050,8 @@ public class PlanFragmenter
         public GroupedExecutionProperties visitTableWriter(TableWriterNode node, Void context)
         {
             GroupedExecutionProperties properties = node.getSource().accept(this, null);
-            boolean recoveryEligible = properties.isRecoveryEligible() && node.getPartitioningScheme().isPresent();
+            // TODO (#13098): Remove partitioning and task writer count check after we have TableWriterMergeOperator
+            boolean recoveryEligible = properties.isRecoveryEligible() && (node.getPartitioningScheme().isPresent() || getTaskWriterCount(session) == 1);
             if (node.getTarget() instanceof CreateHandle) {
                 recoveryEligible &= metadata.getConnectorCapabilities(session, ((CreateHandle) node.getTarget()).getHandle().getConnectorId()).contains(SUPPORTS_PARTITION_COMMIT);
             }
@@ -1207,8 +1226,7 @@ public class PlanFragmenter
                     node.getOutputVariables(),
                     node.getAssignments(),
                     node.getCurrentConstraint(),
-                    node.getEnforcedConstraint(),
-                    node.isTemporaryTable());
+                    node.getEnforcedConstraint());
         }
     }
 

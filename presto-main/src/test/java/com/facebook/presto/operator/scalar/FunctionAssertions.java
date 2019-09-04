@@ -34,6 +34,7 @@ import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSplit;
+import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.ErrorCodeSupplier;
 import com.facebook.presto.spi.FixedPageSource;
 import com.facebook.presto.spi.HostAddress;
@@ -44,7 +45,9 @@ import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordPageSource;
 import com.facebook.presto.spi.RecordSet;
 import com.facebook.presto.spi.StandardErrorCode;
+import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.predicate.Utils;
 import com.facebook.presto.spi.relation.RowExpression;
@@ -59,7 +62,6 @@ import com.facebook.presto.sql.analyzer.SemanticException;
 import com.facebook.presto.sql.gen.ExpressionCompiler;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.ExpressionInterpreter;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.tree.Cast;
 import com.facebook.presto.sql.tree.DefaultTraversalVisitor;
@@ -129,7 +131,6 @@ import static com.facebook.presto.sql.relational.Expressions.constant;
 import static com.facebook.presto.sql.relational.SqlToRowExpressionTranslator.translate;
 import static com.facebook.presto.testing.TestingTaskContext.createTaskContext;
 import static com.facebook.presto.type.UnknownType.UNKNOWN;
-import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.airlift.testing.Assertions.assertInstanceOf;
@@ -180,8 +181,7 @@ public final class FunctionAssertions
             .put(new VariableReferenceExpression("bound_integer", INTEGER), 9)
             .build();
 
-    private static final TypeProvider SYMBOL_TYPES = TypeProvider.copyOf(INPUT_MAPPING.keySet().stream()
-            .collect(toImmutableMap(variable -> new Symbol(variable.getName()), VariableReferenceExpression::getType)));
+    private static final TypeProvider SYMBOL_TYPES = TypeProvider.fromVariables(INPUT_MAPPING.keySet());
 
     private static final PageSourceProvider PAGE_SOURCE_PROVIDER = new TestPageSourceProvider();
     private static final PlanNodeId SOURCE_ID = new PlanNodeId("scan");
@@ -859,8 +859,8 @@ public final class FunctionAssertions
 
         Object result = evaluator.evaluate(symbol -> {
             int position = 0;
-            int channel = INPUT_MAPPING.get(new VariableReferenceExpression(symbol.getName(), SYMBOL_TYPES.get(symbol)));
-            Type type = SYMBOL_TYPES.get(symbol);
+            int channel = INPUT_MAPPING.get(new VariableReferenceExpression(symbol.getName(), SYMBOL_TYPES.get(symbol.toSymbolReference())));
+            Type type = SYMBOL_TYPES.get(symbol.toSymbolReference());
 
             Block block = SOURCE_PAGE.getBlock(channel);
 
@@ -943,6 +943,11 @@ public final class FunctionAssertions
                     PAGE_SOURCE_PROVIDER,
                     cursorProcessor,
                     pageProcessor,
+                    new TableHandle(
+                            new ConnectorId("test"),
+                            new ConnectorTableHandle() {},
+                            new ConnectorTransactionHandle() {},
+                            Optional.empty()),
                     ImmutableList.of(),
                     ImmutableList.of(projection.getType()),
                     new DataSize(0, BYTE),
@@ -1018,7 +1023,7 @@ public final class FunctionAssertions
             implements PageSourceProvider
     {
         @Override
-        public ConnectorPageSource createPageSource(Session session, Split split, List<ColumnHandle> columns)
+        public ConnectorPageSource createPageSource(Session session, Split split, TableHandle table, List<ColumnHandle> columns)
         {
             assertInstanceOf(split.getConnectorSplit(), FunctionAssertions.TestSplit.class);
             FunctionAssertions.TestSplit testSplit = (FunctionAssertions.TestSplit) split.getConnectorSplit();

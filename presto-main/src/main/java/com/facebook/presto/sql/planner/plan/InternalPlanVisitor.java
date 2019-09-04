@@ -34,17 +34,7 @@ public abstract class InternalPlanVisitor<R, C>
         return visitPlan(node, context);
     }
 
-    public R visitTopN(TopNNode node, C context)
-    {
-        return visitPlan(node, context);
-    }
-
     public R visitOutput(OutputNode node, C context)
-    {
-        return visitPlan(node, context);
-    }
-
-    public R visitLimit(LimitNode node, C context)
     {
         return visitPlan(node, context);
     }
@@ -60,11 +50,6 @@ public abstract class InternalPlanVisitor<R, C>
     }
 
     public R visitExplainAnalyze(ExplainAnalyzeNode node, C context)
-    {
-        return visitPlan(node, context);
-    }
-
-    public R visitValues(ValuesNode node, C context)
     {
         return visitPlan(node, context);
     }
@@ -105,6 +90,11 @@ public abstract class InternalPlanVisitor<R, C>
     }
 
     public R visitTableWriter(TableWriterNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
+    public R visitTableWriteMerge(TableWriterMergeNode node, C context)
     {
         return visitPlan(node, context);
     }

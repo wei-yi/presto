@@ -69,6 +69,7 @@ public class HiveClientConfig
     private boolean recursiveDirWalkerEnabled;
 
     private int maxConcurrentFileRenames = 20;
+    private int maxConcurrentZeroRowFileCreations = 20;
 
     private boolean allowCorruptWritesForTesting;
 
@@ -133,6 +134,7 @@ public class HiveClientConfig
     private boolean bucketExecutionEnabled = true;
     private boolean sortedWritingEnabled = true;
     private boolean ignoreTableBucketing;
+    private int maxBucketsForGroupedExecution = 1_000_000;
 
     private int fileSystemMaxCacheSize = 1000;
 
@@ -157,6 +159,8 @@ public class HiveClientConfig
     private String temporaryTableSchema = "default";
     private HiveStorageFormat temporaryTableStorageFormat = ORC;
     private HiveCompressionCodec temporaryTableCompressionCodec = HiveCompressionCodec.SNAPPY;
+
+    private boolean pushdownFilterEnabled;
 
     public int getMaxInitialSplits()
     {
@@ -248,6 +252,19 @@ public class HiveClientConfig
     public HiveClientConfig setMaxConcurrentFileRenames(int maxConcurrentFileRenames)
     {
         this.maxConcurrentFileRenames = maxConcurrentFileRenames;
+        return this;
+    }
+
+    @Min(1)
+    public int getMaxConcurrentZeroRowFileCreations()
+    {
+        return maxConcurrentZeroRowFileCreations;
+    }
+
+    @Config("hive.max-concurrent-zero-row-file-creations")
+    public HiveClientConfig setMaxConcurrentZeroRowFileCreations(int maxConcurrentZeroRowFileCreations)
+    {
+        this.maxConcurrentZeroRowFileCreations = maxConcurrentZeroRowFileCreations;
         return this;
     }
 
@@ -1074,6 +1091,19 @@ public class HiveClientConfig
         return ignoreTableBucketing;
     }
 
+    @Config("hive.max-buckets-for-grouped-execution")
+    @ConfigDescription("Maximum number of buckets to run with grouped execution")
+    public HiveClientConfig setMaxBucketsForGroupedExecution(int maxBucketsForGroupedExecution)
+    {
+        this.maxBucketsForGroupedExecution = maxBucketsForGroupedExecution;
+        return this;
+    }
+
+    public int getMaxBucketsForGroupedExecution()
+    {
+        return maxBucketsForGroupedExecution;
+    }
+
     public int getFileSystemMaxCacheSize()
     {
         return fileSystemMaxCacheSize;
@@ -1292,6 +1322,19 @@ public class HiveClientConfig
     public HiveClientConfig setTemporaryTableCompressionCodec(HiveCompressionCodec temporaryTableCompressionCodec)
     {
         this.temporaryTableCompressionCodec = temporaryTableCompressionCodec;
+        return this;
+    }
+
+    public boolean isPushdownFilterEnabled()
+    {
+        return pushdownFilterEnabled;
+    }
+
+    @Config("hive.pushdown-filter-enabled")
+    @ConfigDescription("Experimental: enable complex filter pushdown")
+    public HiveClientConfig setPushdownFilterEnabled(boolean pushdownFilterEnabled)
+    {
+        this.pushdownFilterEnabled = pushdownFilterEnabled;
         return this;
     }
 }

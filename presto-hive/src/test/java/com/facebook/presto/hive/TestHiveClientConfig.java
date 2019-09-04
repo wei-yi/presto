@@ -65,6 +65,7 @@ public class TestHiveClientConfig
                 .setWriterSortBufferSize(new DataSize(64, Unit.MEGABYTE))
                 .setForceLocalScheduling(false)
                 .setMaxConcurrentFileRenames(20)
+                .setMaxConcurrentZeroRowFileCreations(20)
                 .setRecursiveDirWalkerEnabled(false)
                 .setDfsTimeout(new Duration(60, TimeUnit.SECONDS))
                 .setIpcPingInterval(new Duration(10, TimeUnit.SECONDS))
@@ -107,6 +108,7 @@ public class TestHiveClientConfig
                 .setSkipTargetCleanupOnRollback(false)
                 .setBucketExecutionEnabled(true)
                 .setIgnoreTableBucketing(false)
+                .setMaxBucketsForGroupedExecution(1_000_000)
                 .setFileSystemMaxCacheSize(1000)
                 .setTableStatisticsEnabled(true)
                 .setOptimizeMismatchedBucketCount(false)
@@ -126,7 +128,8 @@ public class TestHiveClientConfig
                 .setTemporaryStagingDirectoryPath("/tmp/presto-${USER}")
                 .setTemporaryTableSchema("default")
                 .setTemporaryTableStorageFormat(ORC)
-                .setTemporaryTableCompressionCodec(SNAPPY));
+                .setTemporaryTableCompressionCodec(SNAPPY)
+                .setPushdownFilterEnabled(false));
     }
 
     @Test
@@ -172,6 +175,7 @@ public class TestHiveClientConfig
                 .put("hive.write-validation-threads", "11")
                 .put("hive.force-local-scheduling", "true")
                 .put("hive.max-concurrent-file-renames", "100")
+                .put("hive.max-concurrent-zero-row-file-creations", "100")
                 .put("hive.assume-canonical-partition-keys", "true")
                 .put("hive.text.max-line-length", "13MB")
                 .put("hive.parquet.use-column-names", "true")
@@ -198,6 +202,7 @@ public class TestHiveClientConfig
                 .put("hive.bucket-execution", "false")
                 .put("hive.sorted-writing", "false")
                 .put("hive.ignore-table-bucketing", "true")
+                .put("hive.max-buckets-for-grouped-execution", "100")
                 .put("hive.fs.cache.max-size", "1010")
                 .put("hive.table-statistics-enabled", "false")
                 .put("hive.optimize-mismatched-bucket-count", "true")
@@ -217,6 +222,7 @@ public class TestHiveClientConfig
                 .put("hive.temporary-table-schema", "other")
                 .put("hive.temporary-table-storage-format", "DWRF")
                 .put("hive.temporary-table-compression-codec", "NONE")
+                .put("hive.pushdown-filter-enabled", "true")
                 .build();
 
         HiveClientConfig expected = new HiveClientConfig()
@@ -243,6 +249,7 @@ public class TestHiveClientConfig
                 .setWriterSortBufferSize(new DataSize(13, Unit.MEGABYTE))
                 .setForceLocalScheduling(true)
                 .setMaxConcurrentFileRenames(100)
+                .setMaxConcurrentZeroRowFileCreations(100)
                 .setRecursiveDirWalkerEnabled(true)
                 .setIpcPingInterval(new Duration(34, TimeUnit.SECONDS))
                 .setDfsTimeout(new Duration(33, TimeUnit.SECONDS))
@@ -285,6 +292,7 @@ public class TestHiveClientConfig
                 .setBucketExecutionEnabled(false)
                 .setSortedWritingEnabled(false)
                 .setIgnoreTableBucketing(true)
+                .setMaxBucketsForGroupedExecution(100)
                 .setFileSystemMaxCacheSize(1010)
                 .setTableStatisticsEnabled(false)
                 .setOptimizeMismatchedBucketCount(true)
@@ -304,7 +312,8 @@ public class TestHiveClientConfig
                 .setTemporaryStagingDirectoryPath("updated")
                 .setTemporaryTableSchema("other")
                 .setTemporaryTableStorageFormat(DWRF)
-                .setTemporaryTableCompressionCodec(NONE);
+                .setTemporaryTableCompressionCodec(NONE)
+                .setPushdownFilterEnabled(true);
 
         ConfigAssertions.assertFullMapping(properties, expected);
     }

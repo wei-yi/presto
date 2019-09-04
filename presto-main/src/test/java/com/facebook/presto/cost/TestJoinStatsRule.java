@@ -15,16 +15,12 @@ package com.facebook.presto.cost;
 
 import com.facebook.presto.metadata.MetadataManager;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.JoinNode.EquiJoinClause;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.LongLiteral;
 import com.facebook.presto.sql.tree.SymbolReference;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
 import java.util.Optional;
@@ -38,6 +34,7 @@ import static com.facebook.presto.sql.planner.plan.JoinNode.Type.FULL;
 import static com.facebook.presto.sql.planner.plan.JoinNode.Type.INNER;
 import static com.facebook.presto.sql.planner.plan.JoinNode.Type.LEFT;
 import static com.facebook.presto.sql.planner.plan.JoinNode.Type.RIGHT;
+import static com.facebook.presto.sql.relational.OriginalExpressionUtils.castToRowExpression;
 import static java.lang.Double.NaN;
 import static org.testng.Assert.assertEquals;
 
@@ -66,15 +63,6 @@ public class TestJoinStatsRule
     private static final double RIGHT_JOIN_COLUMN_2_NON_NULLS = 1 - RIGHT_JOIN_COLUMN_2_NULLS;
     private static final int RIGHT_JOIN_COLUMN_NDV = 15;
     private static final int RIGHT_JOIN_COLUMN_2_NDV = 15;
-
-    private static final TypeProvider TYPES = TypeProvider.copyOf(ImmutableMap.<Symbol, Type>builder()
-            .put(new Symbol(LEFT_JOIN_COLUMN.getName()), LEFT_JOIN_COLUMN.getType())
-            .put(new Symbol(LEFT_JOIN_COLUMN_2.getName()), LEFT_JOIN_COLUMN_2.getType())
-            .put(new Symbol(RIGHT_JOIN_COLUMN.getName()), RIGHT_JOIN_COLUMN.getType())
-            .put(new Symbol(RIGHT_JOIN_COLUMN_2.getName()), RIGHT_JOIN_COLUMN_2.getType())
-            .put(new Symbol(LEFT_OTHER_COLUMN.getName()), LEFT_OTHER_COLUMN.getType())
-            .put(new Symbol(RIGHT_OTHER_COLUMN.getName()), RIGHT_OTHER_COLUMN.getType())
-            .build());
 
     private static final VariableStatistics LEFT_JOIN_COLUMN_STATS =
             variableStatistics(LEFT_JOIN_COLUMN, 0.0, 20.0, LEFT_JOIN_COLUMN_NULLS, LEFT_JOIN_COLUMN_NDV);
@@ -188,7 +176,7 @@ public class TestJoinStatsRule
                             pb.values(rightJoinColumn, rightJoinColumn2),
                             ImmutableList.of(new EquiJoinClause(leftJoinColumn2, rightJoinColumn2), new EquiJoinClause(leftJoinColumn, rightJoinColumn)),
                             ImmutableList.of(leftJoinColumn, leftJoinColumn2, rightJoinColumn, rightJoinColumn2),
-                            Optional.of(leftJoinColumnLessThanTen));
+                            Optional.of(castToRowExpression(leftJoinColumnLessThanTen)));
         }).withSourceStats(0, planNodeStats(LEFT_ROWS_COUNT, LEFT_JOIN_COLUMN_STATS, LEFT_JOIN_COLUMN_2_STATS))
                 .withSourceStats(1, planNodeStats(RIGHT_ROWS_COUNT, RIGHT_JOIN_COLUMN_STATS, RIGHT_JOIN_COLUMN_2_STATS))
                 .check(stats -> stats.equalTo(innerJoinStats));
@@ -204,8 +192,7 @@ public class TestJoinStatsRule
                 Optional.empty(),
                 ImmutableList.of(new EquiJoinClause(LEFT_JOIN_COLUMN, RIGHT_JOIN_COLUMN)),
                 LEFT_STATS,
-                RIGHT_STATS,
-                TYPES);
+                RIGHT_STATS);
         assertEquals(actual, expected);
     }
 
@@ -221,8 +208,7 @@ public class TestJoinStatsRule
                 Optional.empty(),
                 ImmutableList.of(new EquiJoinClause(RIGHT_JOIN_COLUMN, LEFT_JOIN_COLUMN)),
                 RIGHT_STATS,
-                LEFT_STATS,
-                TYPES);
+                LEFT_STATS);
         assertEquals(actual, expected);
     }
 
@@ -234,8 +220,7 @@ public class TestJoinStatsRule
                 Optional.empty(),
                 ImmutableList.of(),
                 LEFT_STATS,
-                RIGHT_STATS,
-                TYPES);
+                RIGHT_STATS);
         assertEquals(actual, expected);
     }
 
@@ -253,8 +238,7 @@ public class TestJoinStatsRule
                         new EquiJoinClause(LEFT_JOIN_COLUMN, RIGHT_JOIN_COLUMN),
                         new EquiJoinClause(LEFT_OTHER_COLUMN, RIGHT_OTHER_COLUMN)),
                 LEFT_STATS,
-                RIGHT_STATS,
-                TYPES);
+                RIGHT_STATS);
         assertEquals(actual, expected);
     }
 

@@ -132,7 +132,11 @@ public class FeaturesConfig
     private boolean legacyUnnestArrayRows;
 
     private boolean jsonSerdeCodeGenerationEnabled;
-    private int maxConcurrentMaterializations = 10;
+    private int maxConcurrentMaterializations = 3;
+
+    private boolean pushdownSubfieldsEnabled;
+
+    private boolean tableWriterMergeOperatorEnabled = true;
 
     public enum JoinReorderingStrategy
     {
@@ -1028,5 +1032,30 @@ public class FeaturesConfig
     public int getMaxConcurrentMaterializations()
     {
         return maxConcurrentMaterializations;
+    }
+
+    @Config("experimental.pushdown-subfields-enabled")
+    @ConfigDescription("Experimental: enable subfield pruning")
+    public FeaturesConfig setPushdownSubfieldsEnabled(boolean pushdownSubfieldsEnabled)
+    {
+        this.pushdownSubfieldsEnabled = pushdownSubfieldsEnabled;
+        return this;
+    }
+
+    public boolean isPushdownSubfieldsEnabled()
+    {
+        return pushdownSubfieldsEnabled;
+    }
+
+    public boolean isTableWriterMergeOperatorEnabled()
+    {
+        return tableWriterMergeOperatorEnabled;
+    }
+
+    @Config("experimental.table-writer-merge-operator-enabled")
+    public FeaturesConfig setTableWriterMergeOperatorEnabled(boolean tableWriterMergeOperatorEnabled)
+    {
+        this.tableWriterMergeOperatorEnabled = tableWriterMergeOperatorEnabled;
+        return this;
     }
 }

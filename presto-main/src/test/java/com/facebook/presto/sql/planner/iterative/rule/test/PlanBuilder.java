@@ -14,6 +14,7 @@
 package com.facebook.presto.sql.planner.iterative.rule.test;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.metadata.IndexHandle;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.ColumnHandle;
@@ -22,11 +23,17 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.function.OperatorType;
 import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.Ordering;
+import com.facebook.presto.spi.plan.OrderingScheme;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.TopNNode;
+import com.facebook.presto.spi.plan.ValuesNode;
 import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.RowExpression;
@@ -36,10 +43,8 @@ import com.facebook.presto.sql.ExpressionUtils;
 import com.facebook.presto.sql.analyzer.TypeSignatureProvider;
 import com.facebook.presto.sql.parser.ParsingOptions;
 import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.planner.OrderingScheme;
 import com.facebook.presto.sql.planner.Partitioning;
 import com.facebook.presto.sql.planner.PartitioningScheme;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.TestingConnectorIndexHandle;
 import com.facebook.presto.sql.planner.TestingConnectorTransactionHandle;
 import com.facebook.presto.sql.planner.TestingWriterTarget;
@@ -57,7 +62,6 @@ import com.facebook.presto.sql.planner.plan.IndexJoinNode;
 import com.facebook.presto.sql.planner.plan.IndexSourceNode;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.LimitNode;
 import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.ProjectNode;
@@ -66,22 +70,21 @@ import com.facebook.presto.sql.planner.plan.SampleNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.planner.plan.TableFinishNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
-import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.UnionNode;
 import com.facebook.presto.sql.planner.plan.UnnestNode;
-import com.facebook.presto.sql.planner.plan.ValuesNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
+import com.facebook.presto.sql.relational.FunctionResolution;
 import com.facebook.presto.sql.relational.OriginalExpressionUtils;
+import com.facebook.presto.sql.relational.SqlToRowExpressionTranslator;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
+import com.facebook.presto.sql.tree.NodeRef;
 import com.facebook.presto.testing.TestingMetadata.TestingTableHandle;
 import com.facebook.presto.testing.TestingTransactionHandle;
-import com.google.common.base.Functions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ListMultimap;
-import com.google.common.collect.Maps;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -93,12 +96,15 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
+import static com.facebook.presto.spi.plan.LimitNode.Step.FINAL;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.sql.analyzer.ExpressionAnalyzer.getExpressionTypes;
 import static com.facebook.presto.sql.planner.PlannerUtils.toOrderingScheme;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.optimizations.ApplyNodeUtil.verifySubquerySupported;
+import static com.facebook.presto.sql.relational.Expressions.call;
 import static com.facebook.presto.sql.relational.Expressions.constant;
 import static com.facebook.presto.sql.relational.Expressions.constantNull;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
@@ -112,12 +118,14 @@ import static java.util.Collections.emptyList;
 
 public class PlanBuilder
 {
+    private final Session session;
     private final PlanNodeIdAllocator idAllocator;
     private final Metadata metadata;
-    private final Map<Symbol, Type> symbols = new HashMap<>();
+    private final Map<String, Type> variables = new HashMap<>();
 
-    public PlanBuilder(PlanNodeIdAllocator idAllocator, Metadata metadata)
+    public PlanBuilder(Session session, PlanNodeIdAllocator idAllocator, Metadata metadata)
     {
+        this.session = session;
         this.idAllocator = idAllocator;
         this.metadata = metadata;
     }
@@ -127,9 +135,19 @@ public class PlanBuilder
         return Assignments.builder().put(variable, OriginalExpressionUtils.castToRowExpression(expression)).build();
     }
 
+    public static Assignments assignment(VariableReferenceExpression variable, RowExpression expression)
+    {
+        return Assignments.builder().put(variable, expression).build();
+    }
+
     public static Assignments assignment(VariableReferenceExpression variable1, Expression expression1, VariableReferenceExpression variable2, Expression expression2)
     {
         return Assignments.builder().put(variable1, OriginalExpressionUtils.castToRowExpression(expression1)).put(variable2, OriginalExpressionUtils.castToRowExpression(expression2)).build();
+    }
+
+    public static Assignments assignment(VariableReferenceExpression variable1, RowExpression expression1, VariableReferenceExpression variable2, RowExpression expression2)
+    {
+        return Assignments.builder().put(variable1, expression1).put(variable2, expression2).build();
     }
 
     public OutputNode output(List<String> columnNames, List<VariableReferenceExpression> variables, PlanNode source)
@@ -219,7 +237,7 @@ public class PlanBuilder
 
     public LimitNode limit(long limit, PlanNode source)
     {
-        return new LimitNode(idAllocator.getNextId(), source, limit, false);
+        return new LimitNode(idAllocator.getNextId(), source, limit, FINAL);
     }
 
     public TopNNode topN(long count, List<VariableReferenceExpression> orderBy, PlanNode source)
@@ -228,9 +246,7 @@ public class PlanBuilder
                 idAllocator.getNextId(),
                 source,
                 count,
-                new OrderingScheme(
-                        orderBy,
-                        Maps.toMap(orderBy, Functions.constant(SortOrder.ASC_NULLS_FIRST))),
+                new OrderingScheme(orderBy.stream().map(variable -> new Ordering(variable, SortOrder.ASC_NULLS_FIRST)).collect(toImmutableList())),
                 TopNNode.Step.SINGLE);
     }
 
@@ -269,6 +285,12 @@ public class PlanBuilder
         AggregationBuilder aggregationBuilder = new AggregationBuilder(getTypes());
         aggregationBuilderConsumer.accept(aggregationBuilder);
         return aggregationBuilder.build();
+    }
+
+    public CallExpression binaryOperation(OperatorType operatorType, RowExpression left, RowExpression right)
+    {
+        FunctionHandle functionHandle = new FunctionResolution(metadata.getFunctionManager()).arithmeticFunction(operatorType, left.getType(), right.getType());
+        return call(operatorType.getOperator(), functionHandle, left.getType(), left, right);
     }
 
     public class AggregationBuilder
@@ -318,6 +340,29 @@ public class PlanBuilder
                     call.getFilter().map(OriginalExpressionUtils::castToRowExpression),
                     call.getOrderBy().map(orderBy -> toOrderingScheme(orderBy, types)),
                     call.isDistinct(),
+                    mask));
+        }
+
+        public AggregationBuilder addAggregation(VariableReferenceExpression output, RowExpression expression)
+        {
+            return addAggregation(output, expression, Optional.empty(), Optional.empty(), false, Optional.empty());
+        }
+
+        public AggregationBuilder addAggregation(
+                VariableReferenceExpression output,
+                RowExpression expression,
+                Optional<RowExpression> filter,
+                Optional<OrderingScheme> orderingScheme,
+                boolean isDistinct,
+                Optional<VariableReferenceExpression> mask)
+        {
+            checkArgument(expression instanceof CallExpression);
+            CallExpression call = (CallExpression) expression;
+            return addAggregation(output, new Aggregation(
+                    call,
+                    filter,
+                    orderingScheme,
+                    isDistinct,
                     mask));
         }
 
@@ -630,12 +675,12 @@ public class PlanBuilder
         return join(joinType, left, right, Optional.empty(), criteria);
     }
 
-    public JoinNode join(JoinNode.Type joinType, PlanNode left, PlanNode right, Expression filter, JoinNode.EquiJoinClause... criteria)
+    public JoinNode join(JoinNode.Type joinType, PlanNode left, PlanNode right, RowExpression filter, JoinNode.EquiJoinClause... criteria)
     {
         return join(joinType, left, right, Optional.of(filter), criteria);
     }
 
-    private JoinNode join(JoinNode.Type joinType, PlanNode left, PlanNode right, Optional<Expression> filter, JoinNode.EquiJoinClause... criteria)
+    private JoinNode join(JoinNode.Type joinType, PlanNode left, PlanNode right, Optional<RowExpression> filter, JoinNode.EquiJoinClause... criteria)
     {
         return join(
                 joinType,
@@ -651,7 +696,7 @@ public class PlanBuilder
                 Optional.empty());
     }
 
-    public JoinNode join(JoinNode.Type type, PlanNode left, PlanNode right, List<JoinNode.EquiJoinClause> criteria, List<VariableReferenceExpression> outputVariables, Optional<Expression> filter)
+    public JoinNode join(JoinNode.Type type, PlanNode left, PlanNode right, List<JoinNode.EquiJoinClause> criteria, List<VariableReferenceExpression> outputVariables, Optional<RowExpression> filter)
     {
         return join(type, left, right, criteria, outputVariables, filter, Optional.empty(), Optional.empty());
     }
@@ -662,7 +707,7 @@ public class PlanBuilder
             PlanNode right,
             List<JoinNode.EquiJoinClause> criteria,
             List<VariableReferenceExpression> outputVariables,
-            Optional<Expression> filter,
+            Optional<RowExpression> filter,
             Optional<VariableReferenceExpression> leftHashVariable,
             Optional<VariableReferenceExpression> rightHashVariable)
     {
@@ -675,12 +720,12 @@ public class PlanBuilder
             PlanNode right,
             List<JoinNode.EquiJoinClause> criteria,
             List<VariableReferenceExpression> outputVariables,
-            Optional<Expression> filter,
+            Optional<RowExpression> filter,
             Optional<VariableReferenceExpression> leftHashVariable,
             Optional<VariableReferenceExpression> rightHashVariable,
             Optional<JoinNode.DistributionType> distributionType)
     {
-        return new JoinNode(idAllocator.getNextId(), type, left, right, criteria, outputVariables, filter.map(OriginalExpressionUtils::castToRowExpression), leftHashVariable, rightHashVariable, distributionType);
+        return new JoinNode(idAllocator.getNextId(), type, left, right, criteria, outputVariables, filter, leftHashVariable, rightHashVariable, distributionType);
     }
 
     public PlanNode indexJoin(IndexJoinNode.Type type, TableScanNode probe, TableScanNode index)
@@ -712,18 +757,12 @@ public class PlanBuilder
                 columns,
                 columnNames,
                 Optional.empty(),
-                Optional.empty(),
                 Optional.empty());
     }
 
     public VariableReferenceExpression variable(String name)
     {
-        return variable(symbol(name, BIGINT));
-    }
-
-    public VariableReferenceExpression variable(Symbol symbol)
-    {
-        return new VariableReferenceExpression(symbol.getName(), symbols.get(symbol));
+        return variable(name, BIGINT);
     }
 
     public VariableReferenceExpression variable(VariableReferenceExpression variable)
@@ -733,29 +772,15 @@ public class PlanBuilder
 
     public VariableReferenceExpression variable(String name, Type type)
     {
-        Symbol s = symbol(name, type);
-        return new VariableReferenceExpression(s.getName(), type);
-    }
-
-    public Symbol symbol(String name)
-    {
-        return symbol(name, BIGINT);
-    }
-
-    public Symbol symbol(String name, Type type)
-    {
-        Symbol symbol = new Symbol(name);
-
-        Type old = symbols.put(symbol, type);
+        Type old = variables.put(name, type);
         if (old != null && !old.equals(type)) {
-            throw new IllegalArgumentException(format("Symbol '%s' already registered with type '%s'", name, old));
+            throw new IllegalArgumentException(format("Variable '%s' already registered with type '%s'", name, old));
         }
 
         if (old == null) {
-            symbols.put(symbol, type);
+            variables.put(name, type);
         }
-
-        return symbol;
+        return new VariableReferenceExpression(name, type);
     }
 
     public WindowNode window(WindowNode.Specification specification, Map<VariableReferenceExpression, WindowNode.Function> functions, PlanNode source)
@@ -808,6 +833,27 @@ public class PlanBuilder
         return ExpressionUtils.rewriteIdentifiersToSymbolReferences(new SqlParser().createExpression(sql));
     }
 
+    public RowExpression rowExpression(String sql)
+    {
+        Expression expression = expression(sql);
+        Map<NodeRef<Expression>, Type> expressionTypes = getExpressionTypes(
+                session,
+                metadata,
+                new SqlParser(),
+                getTypes(),
+                expression,
+                ImmutableList.of(),
+                WarningCollector.NOOP);
+        return SqlToRowExpressionTranslator.translate(
+                expression,
+                expressionTypes,
+                ImmutableMap.of(),
+                metadata.getFunctionManager(),
+                metadata.getTypeManager(),
+                session,
+                false);
+    }
+
     public static RowExpression castToRowExpression(String sql)
     {
         return OriginalExpressionUtils.castToRowExpression(ExpressionUtils.rewriteIdentifiersToSymbolReferences(new SqlParser().createExpression(sql)));
@@ -834,6 +880,6 @@ public class PlanBuilder
 
     public TypeProvider getTypes()
     {
-        return TypeProvider.viewOf(symbols);
+        return TypeProvider.viewOf(variables);
     }
 }

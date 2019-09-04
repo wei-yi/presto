@@ -15,7 +15,6 @@ package com.facebook.presto.sql.planner.plan;
 
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.sql.planner.Symbol;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -32,8 +31,6 @@ import java.util.function.Predicate;
 import java.util.stream.Collector;
 
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.Objects.requireNonNull;
 
 public class Assignments
@@ -118,11 +115,6 @@ public class Assignments
         return assignments.values();
     }
 
-    public Set<Symbol> getSymbols()
-    {
-        return assignments.keySet().stream().map(VariableReferenceExpression::getName).map(Symbol::new).collect(toImmutableSet());
-    }
-
     public Set<VariableReferenceExpression> getVariables()
     {
         return assignments.keySet();
@@ -136,18 +128,6 @@ public class Assignments
     public RowExpression get(VariableReferenceExpression variable)
     {
         return assignments.get(variable);
-    }
-
-    public RowExpression get(Symbol symbol)
-    {
-        List<RowExpression> candidate = assignments.entrySet().stream()
-                .filter(entry -> entry.getKey().getName().equals(symbol.getName()))
-                .map(Entry::getValue)
-                .collect(toImmutableList());
-        if (candidate.isEmpty()) {
-            return null;
-        }
-        return candidate.get(0);
     }
 
     public int size()

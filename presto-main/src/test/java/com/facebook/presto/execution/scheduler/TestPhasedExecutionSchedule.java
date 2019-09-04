@@ -20,11 +20,11 @@ import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.Partitioning;
 import com.facebook.presto.sql.planner.PartitioningScheme;
 import com.facebook.presto.sql.planner.PlanFragment;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.PlanFragmentId;
 import com.facebook.presto.sql.planner.plan.RemoteSourceNode;
@@ -186,7 +186,6 @@ public class TestPhasedExecutionSchedule
 
     private static PlanFragment createBroadcastJoinPlanFragment(String name, PlanFragment buildFragment)
     {
-        Symbol symbol = new Symbol("column");
         VariableReferenceExpression variable = new VariableReferenceExpression("column", BIGINT);
         PlanNode tableScan = new TableScanNode(
                 new PlanNodeId(name),
@@ -196,7 +195,9 @@ public class TestPhasedExecutionSchedule
                         TestingTransactionHandle.create(),
                         Optional.empty()),
                 ImmutableList.of(variable),
-                ImmutableMap.of(variable, new TestingColumnHandle("column")));
+                ImmutableMap.of(variable, new TestingColumnHandle("column")),
+                TupleDomain.all(),
+                TupleDomain.all());
 
         RemoteSourceNode remote = new RemoteSourceNode(new PlanNodeId("build_id"), buildFragment.getId(), ImmutableList.of(), Optional.empty(), REPLICATE);
         PlanNode join = new JoinNode(
@@ -241,7 +242,6 @@ public class TestPhasedExecutionSchedule
 
     private static PlanFragment createTableScanPlanFragment(String name)
     {
-        Symbol symbol = new Symbol("column");
         VariableReferenceExpression variable = new VariableReferenceExpression("column", BIGINT);
         PlanNode planNode = new TableScanNode(
                 new PlanNodeId(name),
@@ -251,7 +251,9 @@ public class TestPhasedExecutionSchedule
                         TestingTransactionHandle.create(),
                         Optional.empty()),
                 ImmutableList.of(variable),
-                ImmutableMap.of(variable, new TestingColumnHandle("column")));
+                ImmutableMap.of(variable, new TestingColumnHandle("column")),
+                TupleDomain.all(),
+                TupleDomain.all());
 
         return createFragment(planNode);
     }

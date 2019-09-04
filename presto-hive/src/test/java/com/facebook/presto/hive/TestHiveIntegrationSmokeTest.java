@@ -36,6 +36,7 @@ import com.facebook.presto.sql.planner.Plan;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
 import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
+import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.facebook.presto.sql.planner.planPrinter.IOPlanPrinter.ColumnConstraint;
@@ -72,10 +73,12 @@ import java.util.stream.LongStream;
 import static com.facebook.presto.SystemSessionProperties.COLOCATED_JOIN;
 import static com.facebook.presto.SystemSessionProperties.CONCURRENT_LIFESPANS_PER_NODE;
 import static com.facebook.presto.SystemSessionProperties.DYNAMIC_SCHEDULE_FOR_GROUPED_EXECUTION;
+import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.GROUPED_EXECUTION_FOR_AGGREGATION;
 import static com.facebook.presto.SystemSessionProperties.GROUPED_EXECUTION_FOR_ELIGIBLE_TABLE_SCANS;
 import static com.facebook.presto.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static com.facebook.presto.SystemSessionProperties.PARTIAL_MERGE_PUSHDOWN_STRATEGY;
+import static com.facebook.presto.SystemSessionProperties.PARTITIONING_PROVIDER_CATALOG;
 import static com.facebook.presto.hive.HiveColumnHandle.BUCKET_COLUMN_NAME;
 import static com.facebook.presto.hive.HiveColumnHandle.PATH_COLUMN_NAME;
 import static com.facebook.presto.hive.HiveQueryRunner.HIVE_CATALOG;
@@ -181,7 +184,7 @@ public class TestHiveIntegrationSmokeTest
     public void testSchemaOperations()
     {
         Session admin = Session.builder(getQueryRunner().getDefaultSession())
-                .setIdentity(new Identity("hive", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("admin")))))
+                .setIdentity(new Identity("hive", Optional.empty(), ImmutableMap.of("hive", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("admin"))), ImmutableMap.of()))
                 .build();
 
         assertUpdate(admin, "CREATE SCHEMA new_schema");
@@ -1918,6 +1921,7 @@ public class TestHiveIntegrationSmokeTest
                     Session.builder(getSession())
                             .setSystemProperty("scale_writers", "true")
                             .setSystemProperty("writer_min_size", "32MB")
+                            .setSystemProperty("task_writer_count", "1")
                             .build(),
                     "CREATE TABLE scale_writers_small AS SELECT * FROM tpch.tiny.orders",
                     (long) computeActual("SELECT count(*) FROM tpch.tiny.orders").getOnlyValue());
@@ -1929,6 +1933,7 @@ public class TestHiveIntegrationSmokeTest
                     Session.builder(getSession())
                             .setSystemProperty("scale_writers", "true")
                             .setSystemProperty("writer_min_size", "1MB")
+                            .setSystemProperty("task_writer_count", "1")
                             .build(),
                     "CREATE TABLE scale_writers_large WITH (format = 'RCBINARY') AS SELECT * FROM tpch.sf1.orders",
                     (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
@@ -2623,6 +2628,35 @@ public class TestHiveIntegrationSmokeTest
         testMaterializedPartitioning(Session.builder(materializeExchangesSession).setSystemProperty("max_concurrent_materializations", "1").build());
         testMaterializedPartitioning(Session.builder(materializeExchangesSession).setSystemProperty("max_concurrent_materializations", "2").build());
         testMaterializedPartitioning(materializeExchangesSession);
+
+        // verify error messages
+        Session materializeAllDefaultPartitioningProvider = Session.builder(getSession())
+                .setSystemProperty(EXCHANGE_MATERIALIZATION_STRATEGY, "ALL")
+                .build();
+        assertQueryFails(
+                materializeAllDefaultPartitioningProvider,
+                "SELECT orderkey, COUNT(*) lines FROM lineitem GROUP BY orderkey",
+                "The \"partitioning_provider_catalog\" session property must be set to enable the exchanges materialization\\. " +
+                        "The catalog must support providing a custom partitioning and storing temporary tables\\.");
+        Session materializeAllWrongPartitioningProvider = Session.builder(getSession())
+                .setSystemProperty(EXCHANGE_MATERIALIZATION_STRATEGY, "ALL")
+                .setSystemProperty(PARTITIONING_PROVIDER_CATALOG, "tpch")
+                .build();
+        assertQueryFails(
+                materializeAllWrongPartitioningProvider,
+                "SELECT orderkey, COUNT(*) lines FROM lineitem GROUP BY orderkey",
+                "Catalog \"tpch\" does not support custom partitioning and cannot be used as a partitioning provider");
+
+        // make sure that bucketing is not ignored for temporary tables
+        Session bucketingIgnored = Session.builder(materializeExchangesSession)
+                .setCatalogSessionProperty(catalog, "ignore_table_bucketing", "true")
+                .build();
+        assertQuery(bucketingIgnored, "SELECT orderkey, COUNT(*) lines FROM lineitem GROUP BY orderkey", assertRemoteMaterializedExchangesCount(1));
+
+        Session bucketingExecutionDisabled = Session.builder(materializeExchangesSession)
+                .setCatalogSessionProperty(catalog, "bucket_execution_enabled", "false")
+                .build();
+        assertQuery(bucketingExecutionDisabled, "SELECT orderkey, COUNT(*) lines FROM lineitem GROUP BY orderkey", assertRemoteMaterializedExchangesCount(1));
     }
 
     private void testMaterializedPartitioning(Session materializeExchangesSession)
@@ -2765,6 +2799,76 @@ public class TestHiveIntegrationSmokeTest
                         ") " +
                         "GROUP BY partkey",
                 assertRemoteMaterializedExchangesCount(2));
+
+        // union over aggregation + broadcast join
+        Session broadcastJoinMaterializeExchangesSession = Session.builder(materializeExchangesSession)
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, BROADCAST.name())
+                .build();
+        Session broadcastJoinStreamingExchangesSession = Session.builder(getSession())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, BROADCAST.name())
+                .build();
+
+        // compatible union partitioning
+        assertQuery(
+                broadcastJoinMaterializeExchangesSession,
+                "WITH union_of_aggregations as ( " +
+                        "    SELECT " +
+                        "        partkey, " +
+                        "        count(*) AS value " +
+                        "    FROM lineitem " +
+                        "    GROUP BY  " +
+                        "        1 " +
+                        "    UNION ALL " +
+                        "    SELECT " +
+                        "        partkey, " +
+                        "        sum(suppkey) AS value " +
+                        "    FROM lineitem " +
+                        "    GROUP BY  " +
+                        "        1        " +
+                        ") " +
+                        "SELECT " +
+                        "    sum(a.value + b.value) " +
+                        "FROM union_of_aggregations a, union_of_aggregations b  " +
+                        "WHERE a.partkey = b.partkey ",
+                "SELECT 12404708",
+                assertRemoteExchangesCount(6)
+                        .andThen(assertRemoteMaterializedExchangesCount(4)));
+
+        // incompatible union partitioning, requires an extra remote exchange for build and probe
+        String incompatiblePartitioningQuery = "WITH union_of_aggregations as ( " +
+                "    SELECT " +
+                "        partkey, " +
+                "        count(*) as value " +
+                "    FROM lineitem " +
+                "    GROUP BY  " +
+                "        1 " +
+                "    UNION ALL " +
+                "    SELECT " +
+                "        partkey, " +
+                "        suppkey as value " +
+                "    FROM lineitem " +
+                "    GROUP BY  " +
+                "        1, 2        " +
+                ") " +
+                "SELECT " +
+                "    sum(a.value + b.value) " +
+                "FROM union_of_aggregations a, union_of_aggregations b  " +
+                "WHERE a.partkey = b.partkey ";
+
+        // system partitioning handle is always compatible
+        assertQuery(
+                broadcastJoinStreamingExchangesSession,
+                incompatiblePartitioningQuery,
+                "SELECT 4639006",
+                assertRemoteExchangesCount(6));
+
+        // hive partitioning handle is incompatible
+        assertQuery(
+                broadcastJoinMaterializeExchangesSession,
+                incompatiblePartitioningQuery,
+                "SELECT 4639006",
+                assertRemoteExchangesCount(8)
+                        .andThen(assertRemoteMaterializedExchangesCount(4)));
     }
 
     public static Consumer<Plan> assertRemoteMaterializedExchangesCount(int expectedRemoteExchangesCount)
@@ -3330,6 +3434,11 @@ public class TestHiveIntegrationSmokeTest
 
     private Consumer<Plan> assertRemoteExchangesCount(int expectedRemoteExchangesCount)
     {
+        return assertRemoteExchangesCount(expectedRemoteExchangesCount, getSession(), (DistributedQueryRunner) getQueryRunner());
+    }
+
+    public static Consumer<Plan> assertRemoteExchangesCount(int expectedRemoteExchangesCount, Session session, DistributedQueryRunner queryRunner)
+    {
         return plan ->
         {
             int actualRemoteExchangesCount = searchFrom(plan.getRoot())
@@ -3337,8 +3446,7 @@ public class TestHiveIntegrationSmokeTest
                     .findAll()
                     .size();
             if (actualRemoteExchangesCount != expectedRemoteExchangesCount) {
-                Session session = getSession();
-                Metadata metadata = ((DistributedQueryRunner) getQueryRunner()).getCoordinator().getMetadata();
+                Metadata metadata = queryRunner.getCoordinator().getMetadata();
                 String formattedPlan = textLogicalPlan(plan.getRoot(), plan.getTypes(), metadata.getFunctionManager(), StatsAndCosts.empty(), session, 0);
                 throw new AssertionError(format(
                         "Expected [\n%s\n] remote exchanges but found [\n%s\n] remote exchanges. Actual plan is [\n\n%s\n]",
@@ -3431,18 +3539,18 @@ public class TestHiveIntegrationSmokeTest
                 "   partitioned_by = ARRAY['p_varchar'] " +
                 ") " +
                 "AS " +
-                "SELECT c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, p_varchar " +
+                "SELECT c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, c_array, p_varchar " +
                 "FROM ( " +
                 "  VALUES " +
-                "    (null, null, null, null, null, null, 'p1'), " +
-                "    (null, null, null, null, null, null, 'p1'), " +
-                "    (true, BIGINT '1', DOUBLE '2.2', TIMESTAMP '2012-08-08 01:00', CAST('abc1' AS VARCHAR), CAST('bcd1' AS VARBINARY), 'p1')," +
-                "    (false, BIGINT '0', DOUBLE '1.2', TIMESTAMP '2012-08-08 00:00', CAST('abc2' AS VARCHAR), CAST('bcd2' AS VARBINARY), 'p1')," +
-                "    (null, null, null, null, null, null, 'p2'), " +
-                "    (null, null, null, null, null, null, 'p2'), " +
-                "    (true, BIGINT '2', DOUBLE '3.3', TIMESTAMP '2012-09-09 01:00', CAST('cba1' AS VARCHAR), CAST('dcb1' AS VARBINARY), 'p2'), " +
-                "    (false, BIGINT '1', DOUBLE '2.3', TIMESTAMP '2012-09-09 00:00', CAST('cba2' AS VARCHAR), CAST('dcb2' AS VARBINARY), 'p2') " +
-                ") AS x (c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, p_varchar)", tableName), 8);
+                "    (null, null, null, null, null, null, null, 'p1'), " +
+                "    (null, null, null, null, null, null, null, 'p1'), " +
+                "    (true, BIGINT '1', DOUBLE '2.2', TIMESTAMP '2012-08-08 01:00', CAST('abc1' AS VARCHAR), CAST('bcd1' AS VARBINARY), sequence(0, 10), 'p1')," +
+                "    (false, BIGINT '0', DOUBLE '1.2', TIMESTAMP '2012-08-08 00:00', CAST('abc2' AS VARCHAR), CAST('bcd2' AS VARBINARY), sequence(10, 20), 'p1')," +
+                "    (null, null, null, null, null, null, null, 'p2'), " +
+                "    (null, null, null, null, null, null, null, 'p2'), " +
+                "    (true, BIGINT '2', DOUBLE '3.3', TIMESTAMP '2012-09-09 01:00', CAST('cba1' AS VARCHAR), CAST('dcb1' AS VARBINARY), sequence(20, 25), 'p2'), " +
+                "    (false, BIGINT '1', DOUBLE '2.3', TIMESTAMP '2012-09-09 00:00', CAST('cba2' AS VARCHAR), CAST('dcb2' AS VARBINARY), sequence(30, 35), 'p2') " +
+                ") AS x (c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, c_array, p_varchar)", tableName), 8);
 
         assertQuery(format("SHOW STATS FOR (SELECT * FROM %s WHERE p_varchar = 'p1')", tableName),
                 "SELECT * FROM VALUES " +
@@ -3452,6 +3560,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0E0, 0.5E0, null, null, null), " +
                         "('c_varchar', 8.0E0, 2.0E0, 0.5E0, null, null, null), " +
                         "('c_varbinary', 8.0E0, null, 0.5E0, null, null, null), " +
+                        "('c_array', 176.0E0, null, 0.5, null, null, null), " +
                         "('p_varchar', 8.0E0, 1.0E0, 0.0E0, null, null, null), " +
                         "(null, null, null, null, 4.0E0, null, null)");
         assertQuery(format("SHOW STATS FOR (SELECT * FROM %s WHERE p_varchar = 'p2')", tableName),
@@ -3462,6 +3571,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0E0, 0.5E0, null, null, null), " +
                         "('c_varchar', 8.0E0, 2.0E0, 0.5E0, null, null, null), " +
                         "('c_varbinary', 8.0E0, null, 0.5E0, null, null, null), " +
+                        "('c_array', 96.0E0, null, 0.5, null, null, null), " +
                         "('p_varchar', 8.0E0, 1.0E0, 0.0E0, null, null, null), " +
                         "(null, null, null, null, 4.0E0, null, null)");
 
@@ -3474,6 +3584,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 0E0, 0E0, null, null, null), " +
                         "('c_varchar', 0E0, 0E0, 0E0, null, null, null), " +
                         "('c_varbinary', null, 0E0, 0E0, null, null, null), " +
+                        "('c_array', null, 0E0, 0E0, null, null, null), " +
                         "('p_varchar', 0E0, 0E0, 0E0, null, null, null), " +
                         "(null, null, null, null, 0E0, null, null)");
 
@@ -3492,6 +3603,7 @@ public class TestHiveIntegrationSmokeTest
                 "   c_timestamp TIMESTAMP, " +
                 "   c_varchar VARCHAR, " +
                 "   c_varbinary VARBINARY, " +
+                "   c_array ARRAY(BIGINT), " +
                 "   p_varchar VARCHAR " +
                 ") " +
                 "WITH ( " +
@@ -3500,18 +3612,18 @@ public class TestHiveIntegrationSmokeTest
 
         assertUpdate(format("" +
                 "INSERT INTO %s " +
-                "SELECT c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, p_varchar " +
+                "SELECT c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, c_array, p_varchar " +
                 "FROM ( " +
                 "  VALUES " +
-                "    (null, null, null, null, null, null, 'p1'), " +
-                "    (null, null, null, null, null, null, 'p1'), " +
-                "    (true, BIGINT '1', DOUBLE '2.2', TIMESTAMP '2012-08-08 01:00', CAST('abc1' AS VARCHAR), CAST('bcd1' AS VARBINARY), 'p1')," +
-                "    (false, BIGINT '0', DOUBLE '1.2', TIMESTAMP '2012-08-08 00:00', CAST('abc2' AS VARCHAR), CAST('bcd2' AS VARBINARY), 'p1')," +
-                "    (null, null, null, null, null, null, 'p2'), " +
-                "    (null, null, null, null, null, null, 'p2'), " +
-                "    (true, BIGINT '2', DOUBLE '3.3', TIMESTAMP '2012-09-09 01:00', CAST('cba1' AS VARCHAR), CAST('dcb1' AS VARBINARY), 'p2'), " +
-                "    (false, BIGINT '1', DOUBLE '2.3', TIMESTAMP '2012-09-09 00:00', CAST('cba2' AS VARCHAR), CAST('dcb2' AS VARBINARY), 'p2') " +
-                ") AS x (c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, p_varchar)", tableName), 8);
+                "    (null, null, null, null, null, null, null, 'p1'), " +
+                "    (null, null, null, null, null, null, null, 'p1'), " +
+                "    (true, BIGINT '1', DOUBLE '2.2', TIMESTAMP '2012-08-08 01:00', CAST('abc1' AS VARCHAR), CAST('bcd1' AS VARBINARY), sequence(0, 10), 'p1')," +
+                "    (false, BIGINT '0', DOUBLE '1.2', TIMESTAMP '2012-08-08 00:00', CAST('abc2' AS VARCHAR), CAST('bcd2' AS VARBINARY), sequence(10, 20), 'p1')," +
+                "    (null, null, null, null, null, null, null, 'p2'), " +
+                "    (null, null, null, null, null, null, null, 'p2'), " +
+                "    (true, BIGINT '2', DOUBLE '3.3', TIMESTAMP '2012-09-09 01:00', CAST('cba1' AS VARCHAR), CAST('dcb1' AS VARBINARY), sequence(20, 25), 'p2'), " +
+                "    (false, BIGINT '1', DOUBLE '2.3', TIMESTAMP '2012-09-09 00:00', CAST('cba2' AS VARCHAR), CAST('dcb2' AS VARBINARY), sequence(30, 35), 'p2') " +
+                ") AS x (c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, c_array, p_varchar)", tableName), 8);
 
         assertQuery(format("SHOW STATS FOR (SELECT * FROM %s WHERE p_varchar = 'p1')", tableName),
                 "SELECT * FROM VALUES " +
@@ -3521,6 +3633,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0E0, 0.5E0, null, null, null), " +
                         "('c_varchar', 8.0E0, 2.0E0, 0.5E0, null, null, null), " +
                         "('c_varbinary', 8.0E0, null, 0.5E0, null, null, null), " +
+                        "('c_array', 176.0E0, null, 0.5E0, null, null, null), " +
                         "('p_varchar', 8.0E0, 1.0E0, 0.0E0, null, null, null), " +
                         "(null, null, null, null, 4.0E0, null, null)");
         assertQuery(format("SHOW STATS FOR (SELECT * FROM %s WHERE p_varchar = 'p2')", tableName),
@@ -3531,6 +3644,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0E0, 0.5E0, null, null, null), " +
                         "('c_varchar', 8.0E0, 2.0E0, 0.5E0, null, null, null), " +
                         "('c_varbinary', 8.0E0, null, 0.5E0, null, null, null), " +
+                        "('c_array', 96.0E0, null, 0.5E0, null, null, null), " +
                         "('p_varchar', 8.0E0, 1.0E0, 0.0E0, null, null, null), " +
                         "(null, null, null, null, 4.0E0, null, null)");
 
@@ -3543,6 +3657,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 0E0, 0E0, null, null, null), " +
                         "('c_varchar', 0E0, 0E0, 0E0, null, null, null), " +
                         "('c_varbinary', null, 0E0, 0E0, null, null, null), " +
+                        "('c_array', null, 0E0, 0E0, null, null, null), " +
                         "('p_varchar', 0E0, 0E0, 0E0, null, null, null), " +
                         "(null, null, null, null, 0E0, null, null)");
 
@@ -3624,6 +3739,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, null, null, null, null, null), " +
                         "('c_varchar', null, null, null, null, null, null), " +
                         "('c_varbinary', null, null, null, null, null, null), " +
+                        "('c_array', null, null, null, null, null, null), " +
                         "('p_varchar', 24.0, 3.0, 0.25, null, null, null), " +
                         "('p_bigint', null, 2.0, 0.25, null, '7', '8'), " +
                         "(null, null, null, null, 16.0, null, null)");
@@ -3638,6 +3754,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, null, null, null, null, null), " +
                         "('c_varchar', null, null, null, null, null, null), " +
                         "('c_varbinary', null, null, null, null, null, null), " +
+                        "('c_array', null, null, null, null, null, null), " +
                         "('p_varchar', 24.0, 3.0, 0.25, null, null, null), " +
                         "('p_bigint', null, 2.0, 0.25, null, '7', '8'), " +
                         "(null, null, null, null, 16.0, null, null)");
@@ -3653,6 +3770,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0, 0.5, null, null, null), " +
                         "('c_varchar', 8.0, 2.0, 0.5, null, null, null), " +
                         "('c_varbinary', 4.0, null, 0.5, null, null, null), " +
+                        "('c_array', 176.0, null, 0.5, null, null, null), " +
                         "('p_varchar', 8.0, 1.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 1.0, 0.0, null, '7', '7'), " +
                         "(null, null, null, null, 4.0, null, null)");
@@ -3664,6 +3782,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0, 0.5, null, null, null), " +
                         "('c_varchar', 8.0, 2.0, 0.5, null, null, null), " +
                         "('c_varbinary', 4.0, null, 0.5, null, null, null), " +
+                        "('c_array', 96.0, null, 0.5, null, null, null), " +
                         "('p_varchar', 8.0, 1.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 1.0, 0.0, null, '7', '7'), " +
                         "(null, null, null, null, 4.0, null, null)");
@@ -3675,6 +3794,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 4.0, 0.0, null, null, null), " +
                         "('c_varchar', 16.0, 4.0, 0.0, null, null, null), " +
                         "('c_varbinary', 8.0, null, 0.0, null, null, null), " +
+                        "('c_array', 192.0, null, 0.0, null, null, null), " +
                         "('p_varchar', 0.0, 0.0, 1.0, null, null, null), " +
                         "('p_bigint', null, 0.0, 1.0, null, null, null), " +
                         "(null, null, null, null, 4.0, null, null)");
@@ -3688,6 +3808,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, null, null, null, null, null), " +
                         "('c_varchar', null, null, null, null, null, null), " +
                         "('c_varbinary', null, null, null, null, null, null), " +
+                        "('c_array', null, null, null, null, null, null), " +
                         "('p_varchar', 8.0, 1.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 1.0, 0.0, null, '8', '8'), " +
                         "(null, null, null, null, 4.0, null, null)");
@@ -3699,6 +3820,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, null, null, null, null, null), " +
                         "('c_varchar', null, null, null, null, null, null), " +
                         "('c_varbinary', null, null, null, null, null, null), " +
+                        "('c_array', null, null, null, null, null, null), " +
                         "('p_varchar', 0.0, 0.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 0.0, 0.0, null, null, null), " +
                         "(null, null, null, null, 0.0, null, null)");
@@ -3710,6 +3832,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, null, null, null, null, null), " +
                         "('c_varchar', null, null, null, null, null, null), " +
                         "('c_varbinary', null, null, null, null, null, null), " +
+                        "('c_array', null, null, null, null, null, null), " +
                         "('p_varchar', 0.0, 0.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 0.0, 0.0, null, null, null), " +
                         "(null, null, null, null, 0.0, null, null)");
@@ -3726,6 +3849,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0, 0.5, null, null, null), " +
                         "('c_varchar', 8.0, 2.0, 0.5, null, null, null), " +
                         "('c_varbinary', 4.0, null, 0.5, null, null, null), " +
+                        "('c_array', 176.0, null, 0.5, null, null, null), " +
                         "('p_varchar', 8.0, 1.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 1.0, 0.0, null, '7', '7'), " +
                         "(null, null, null, null, 4.0, null, null)");
@@ -3737,6 +3861,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0, 0.5, null, null, null), " +
                         "('c_varchar', 8.0, 2.0, 0.5, null, null, null), " +
                         "('c_varbinary', 4.0, null, 0.5, null, null, null), " +
+                        "('c_array', 96.0, null, 0.5, null, null, null), " +
                         "('p_varchar', 8.0, 1.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 1.0, 0.0, null, '7', '7'), " +
                         "(null, null, null, null, 4.0, null, null)");
@@ -3748,6 +3873,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 4.0, 0.0, null, null, null), " +
                         "('c_varchar', 16.0, 4.0, 0.0, null, null, null), " +
                         "('c_varbinary', 8.0, null, 0.0, null, null, null), " +
+                        "('c_array', 192.0, null, 0.0, null, null, null), " +
                         "('p_varchar', 0.0, 0.0, 1.0, null, null, null), " +
                         "('p_bigint', null, 0.0, 1.0, null, null, null), " +
                         "(null, null, null, null, 4.0, null, null)");
@@ -3759,6 +3885,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 2.0, 0.5, null, null, null), " +
                         "('c_varchar', 8.0, 2.0, 0.5, null, null, null), " +
                         "('c_varbinary', 4.0, null, 0.5, null, null, null), " +
+                        "('c_array', 96.0, null, 0.5, null, null, null), " +
                         "('p_varchar', 8.0, 1.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 1.0, 0.0, null, '8', '8'), " +
                         "(null, null, null, null, 4.0, null, null)");
@@ -3770,6 +3897,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 0.0, 0.0, null, null, null), " +
                         "('c_varchar', 0.0, 0.0, 0.0, null, null, null), " +
                         "('c_varbinary', 0.0, null, 0.0, null, null, null), " +
+                        "('c_array', 0.0, null, 0.0, null, null, null), " +
                         "('p_varchar', 0.0, 0.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 0.0, 0.0, null, null, null), " +
                         "(null, null, null, null, 0.0, null, null)");
@@ -3781,6 +3909,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 0.0, 0.0, null, null, null), " +
                         "('c_varchar', 0.0, 0.0, 0.0, null, null, null), " +
                         "('c_varbinary', 0.0, null, 0.0, null, null, null), " +
+                        "('c_array', 0.0, null, 0.0, null, null, null), " +
                         "('p_varchar', 0.0, 0.0, 0.0, null, null, null), " +
                         "('p_bigint', null, 0.0, 0.0, null, null, null), " +
                         "(null, null, null, null, 0.0, null, null)");
@@ -3804,6 +3933,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, null, null, null, null, null), " +
                         "('c_varchar', null, null, null, null, null, null), " +
                         "('c_varbinary', null, null, null, null, null, null), " +
+                        "('c_array', null, null, null, null, null, null), " +
                         "('p_varchar', null, null, null, null, null, null), " +
                         "('p_bigint', null, null, null, null, null, null), " +
                         "(null, null, null, null, 16.0, null, null)");
@@ -3819,6 +3949,7 @@ public class TestHiveIntegrationSmokeTest
                         "('c_timestamp', null, 10.0, 0.375, null, null, null), " +
                         "('c_varchar', 40.0, 10.0, 0.375, null, null, null), " +
                         "('c_varbinary', 20.0, null, 0.375, null, null, null), " +
+                        "('c_array', 560.0, null, 0.375, null, null, null), " +
                         "('p_varchar', 24.0, 3.0, 0.25, null, null, null), " +
                         "('p_bigint', null, 2.0, 0.25, null, '7', '8'), " +
                         "(null, null, null, null, 16.0, null, null)");
@@ -3853,30 +3984,30 @@ public class TestHiveIntegrationSmokeTest
                         tableName +
                         (partitioned ? " WITH (partitioned_by = ARRAY['p_varchar', 'p_bigint'])\n" : " ") +
                         "AS " +
-                        "SELECT c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, p_varchar, p_bigint " +
+                        "SELECT c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, c_array, p_varchar, p_bigint " +
                         "FROM ( " +
                         "  VALUES " +
                         // p_varchar = 'p1', p_bigint = BIGINT '7'
-                        "    (null, null, null, null, null, null, 'p1', BIGINT '7'), " +
-                        "    (null, null, null, null, null, null, 'p1', BIGINT '7'), " +
-                        "    (true, BIGINT '1', DOUBLE '2.2', TIMESTAMP '2012-08-08 01:00', 'abc1', X'bcd1', 'p1', BIGINT '7'), " +
-                        "    (false, BIGINT '0', DOUBLE '1.2', TIMESTAMP '2012-08-08 00:00', 'abc2', X'bcd2', 'p1', BIGINT '7'), " +
+                        "    (null, null, null, null, null, null, null, 'p1', BIGINT '7'), " +
+                        "    (null, null, null, null, null, null, null, 'p1', BIGINT '7'), " +
+                        "    (true, BIGINT '1', DOUBLE '2.2', TIMESTAMP '2012-08-08 01:00', 'abc1', X'bcd1', sequence(0, 10), 'p1', BIGINT '7'), " +
+                        "    (false, BIGINT '0', DOUBLE '1.2', TIMESTAMP '2012-08-08 00:00', 'abc2', X'bcd2', sequence(10, 20), 'p1', BIGINT '7'), " +
                         // p_varchar = 'p2', p_bigint = BIGINT '7'
-                        "    (null, null, null, null, null, null, 'p2', BIGINT '7'), " +
-                        "    (null, null, null, null, null, null, 'p2', BIGINT '7'), " +
-                        "    (true, BIGINT '2', DOUBLE '3.3', TIMESTAMP '2012-09-09 01:00', 'cba1', X'dcb1', 'p2', BIGINT '7'), " +
-                        "    (false, BIGINT '1', DOUBLE '2.3', TIMESTAMP '2012-09-09 00:00', 'cba2', X'dcb2', 'p2', BIGINT '7'), " +
+                        "    (null, null, null, null, null, null, null, 'p2', BIGINT '7'), " +
+                        "    (null, null, null, null, null, null, null, 'p2', BIGINT '7'), " +
+                        "    (true, BIGINT '2', DOUBLE '3.3', TIMESTAMP '2012-09-09 01:00', 'cba1', X'dcb1', sequence(20, 25), 'p2', BIGINT '7'), " +
+                        "    (false, BIGINT '1', DOUBLE '2.3', TIMESTAMP '2012-09-09 00:00', 'cba2', X'dcb2', sequence(30, 35), 'p2', BIGINT '7'), " +
                         // p_varchar = 'p3', p_bigint = BIGINT '8'
-                        "    (null, null, null, null, null, null, 'p3', BIGINT '8'), " +
-                        "    (null, null, null, null, null, null, 'p3', BIGINT '8'), " +
-                        "    (true, BIGINT '3', DOUBLE '4.4', TIMESTAMP '2012-10-10 01:00', 'bca1', X'cdb1', 'p3', BIGINT '8'), " +
-                        "    (false, BIGINT '2', DOUBLE '3.4', TIMESTAMP '2012-10-10 00:00', 'bca2', X'cdb2', 'p3', BIGINT '8'), " +
+                        "    (null, null, null, null, null, null, null, 'p3', BIGINT '8'), " +
+                        "    (null, null, null, null, null, null, null, 'p3', BIGINT '8'), " +
+                        "    (true, BIGINT '3', DOUBLE '4.4', TIMESTAMP '2012-10-10 01:00', 'bca1', X'cdb1', sequence(40, 45), 'p3', BIGINT '8'), " +
+                        "    (false, BIGINT '2', DOUBLE '3.4', TIMESTAMP '2012-10-10 00:00', 'bca2', X'cdb2', sequence(50, 55), 'p3', BIGINT '8'), " +
                         // p_varchar = NULL, p_bigint = NULL
-                        "    (false, BIGINT '7', DOUBLE '7.7', TIMESTAMP '1977-07-07 07:07', 'efa1', X'efa1', NULL, NULL), " +
-                        "    (false, BIGINT '6', DOUBLE '6.7', TIMESTAMP '1977-07-07 07:06', 'efa2', X'efa2', NULL, NULL), " +
-                        "    (false, BIGINT '5', DOUBLE '5.7', TIMESTAMP '1977-07-07 07:05', 'efa3', X'efa3', NULL, NULL), " +
-                        "    (false, BIGINT '4', DOUBLE '4.7', TIMESTAMP '1977-07-07 07:04', 'efa4', X'efa4', NULL, NULL) " +
-                        ") AS x (c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, p_varchar, p_bigint)", 16);
+                        "    (false, BIGINT '7', DOUBLE '7.7', TIMESTAMP '1977-07-07 07:07', 'efa1', X'efa1', sequence(60, 65), NULL, NULL), " +
+                        "    (false, BIGINT '6', DOUBLE '6.7', TIMESTAMP '1977-07-07 07:06', 'efa2', X'efa2', sequence(70, 75), NULL, NULL), " +
+                        "    (false, BIGINT '5', DOUBLE '5.7', TIMESTAMP '1977-07-07 07:05', 'efa3', X'efa3', sequence(80, 85), NULL, NULL), " +
+                        "    (false, BIGINT '4', DOUBLE '4.7', TIMESTAMP '1977-07-07 07:04', 'efa4', X'efa4', sequence(90, 95), NULL, NULL) " +
+                        ") AS x (c_boolean, c_bigint, c_double, c_timestamp, c_varchar, c_varbinary, c_array, p_varchar, p_bigint)", 16);
 
         if (partitioned) {
             // Create empty partitions
@@ -4092,15 +4223,15 @@ public class TestHiveIntegrationSmokeTest
         assertUpdate(format("CREATE TABLE %s(i int)", tableName));
 
         Session session = Session.builder(getSession())
-                .setCatalogSessionProperty("hive", "temporary_staging_directory_enabled", "false")
+                .setCatalogSessionProperty(catalog, "temporary_staging_directory_enabled", "false")
                 .build();
 
         HiveInsertTableHandle hiveInsertTableHandle = getHiveInsertTableHandle(session, tableName);
         assertEquals(hiveInsertTableHandle.getLocationHandle().getWritePath(), hiveInsertTableHandle.getLocationHandle().getTargetPath());
 
         session = Session.builder(getSession())
-                .setCatalogSessionProperty("hive", "temporary_staging_directory_enabled", "true")
-                .setCatalogSessionProperty("hive", "temporary_staging_directory_path", "/tmp/custom/temporary-${USER}")
+                .setCatalogSessionProperty(catalog, "temporary_staging_directory_enabled", "true")
+                .setCatalogSessionProperty(catalog, "temporary_staging_directory_path", "/tmp/custom/temporary-${USER}")
                 .build();
 
         hiveInsertTableHandle = getHiveInsertTableHandle(session, tableName);
@@ -4114,9 +4245,9 @@ public class TestHiveIntegrationSmokeTest
     public void testLikeSerializesWithPushdownFilter()
     {
         Session pushdownFilterEnabled = Session.builder(getQueryRunner().getDefaultSession())
-                .setCatalogSessionProperty(HIVE_CATALOG, PUSHDOWN_FILTER_ENABLED, "true")
+                .setCatalogSessionProperty(catalog, PUSHDOWN_FILTER_ENABLED, "true")
                 .build();
-        assertQuerySucceeds(pushdownFilterEnabled, "SELECT comment FROM lineitem WHERE comment LIKE 'abc%'");
+        assertQueryFails(pushdownFilterEnabled, "SELECT comment FROM lineitem WHERE comment LIKE 'abc%'", "Error opening Hive split.*Unsupported type: VARCHAR");
     }
 
     @Test
@@ -4133,6 +4264,35 @@ public class TestHiveIntegrationSmokeTest
                 "  ) WHERE orderkey = 1 \n" +
                 "  GROUP BY\n" +
                 "      linenumber");
+    }
+
+    @Test
+    public void testIgnoreTableBucketing()
+    {
+        String query = "SELECT count(*) FROM orders WHERE \"$bucket\" = 1";
+        assertQuery(bucketedSession, query, "SELECT 1350");
+        Session ignoreBucketingSession = Session.builder(bucketedSession)
+                .setCatalogSessionProperty(bucketedSession.getCatalog().get(), "ignore_table_bucketing", "true")
+                .build();
+        assertQueryFails(ignoreBucketingSession, query, "Table bucketing is ignored\\. The virtual \"\\$bucket\" column cannot be referenced\\.");
+    }
+
+    @Test
+    public void testTableWriterMergeNodeIsPresent()
+    {
+        assertUpdate(
+                getSession(),
+                "CREATE TABLE test_table_writer_merge_operator AS SELECT orderkey FROM orders",
+                15000,
+                assertTableWriterMergeNodeIsPresent());
+    }
+
+    private static Consumer<Plan> assertTableWriterMergeNodeIsPresent()
+    {
+        return plan -> assertTrue(searchFrom(plan.getRoot())
+                .where(node -> node instanceof TableWriterMergeNode)
+                .findFirst()
+                .isPresent());
     }
 
     private HiveInsertTableHandle getHiveInsertTableHandle(Session session, String tableName)

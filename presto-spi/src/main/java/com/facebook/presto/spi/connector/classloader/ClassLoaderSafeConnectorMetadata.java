@@ -282,10 +282,10 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
-    public TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Constraint<ColumnHandle> constraint)
+    public TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, List<ColumnHandle> columnHandles, Constraint<ColumnHandle> constraint)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.getTableStatistics(session, tableHandle, constraint);
+            return delegate.getTableStatistics(session, tableHandle, columnHandles, constraint);
         }
     }
 
@@ -594,18 +594,18 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
-    public void commitPartition(ConnectorSession session, ConnectorOutputTableHandle tableHandle, int partitionId, Collection<Slice> fragments)
+    public void commitPartition(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            delegate.commitPartition(session, tableHandle, partitionId, fragments);
+            delegate.commitPartition(session, tableHandle, fragments);
         }
     }
 
     @Override
-    public void commitPartition(ConnectorSession session, ConnectorInsertTableHandle tableHandle, int partitionId, Collection<Slice> fragments)
+    public void commitPartition(ConnectorSession session, ConnectorInsertTableHandle tableHandle, Collection<Slice> fragments)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            delegate.commitPartition(session, tableHandle, partitionId, fragments);
+            delegate.commitPartition(session, tableHandle, fragments);
         }
     }
 }

@@ -13,11 +13,14 @@
  */
 package com.facebook.presto.verifier.event;
 
+import com.facebook.presto.verifier.framework.SkippedReason;
+import com.google.common.collect.ImmutableList;
 import io.airlift.event.client.EventField;
 import io.airlift.event.client.EventType;
 
 import javax.annotation.concurrent.Immutable;
 
+import java.util.List;
 import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
@@ -39,6 +42,8 @@ public class VerifierQueryEvent
     private final String name;
 
     private final String status;
+    private final String skippedReason;
+
     private final Boolean deterministic;
     private final String resolveMessage;
 
@@ -48,28 +53,37 @@ public class VerifierQueryEvent
     private final String errorCode;
     private final String errorMessage;
 
+    private final QueryFailure finalQueryFailure;
+    private final List<QueryFailure> queryFailures;
+
     public VerifierQueryEvent(
             String suite,
             String testId,
             String name,
             EventStatus status,
+            Optional<SkippedReason> skippedReason,
             Optional<Boolean> deterministic,
             Optional<String> resolveMessage,
             QueryInfo controlQueryInfo,
             QueryInfo testQueryInfo,
             Optional<String> errorCode,
-            Optional<String> errorMessage)
+            Optional<String> errorMessage,
+            Optional<QueryFailure> finalQueryFailure,
+            List<QueryFailure> queryFailures)
     {
         this.suite = requireNonNull(suite, "suite is null");
         this.testId = requireNonNull(testId, "testId is null");
         this.name = requireNonNull(name, "name is null");
         this.status = status.name();
+        this.skippedReason = skippedReason.map(SkippedReason::name).orElse(null);
         this.deterministic = deterministic.orElse(null);
         this.resolveMessage = resolveMessage.orElse(null);
         this.controlQueryInfo = requireNonNull(controlQueryInfo, "controlQueryInfo is null");
         this.testQueryInfo = requireNonNull(testQueryInfo, "testQueryInfo is null");
         this.errorCode = errorCode.orElse(null);
         this.errorMessage = errorMessage.orElse(null);
+        this.finalQueryFailure = finalQueryFailure.orElse(null);
+        this.queryFailures = ImmutableList.copyOf(queryFailures);
     }
 
     @EventField
@@ -94,6 +108,12 @@ public class VerifierQueryEvent
     public String getStatus()
     {
         return status;
+    }
+
+    @EventField
+    public String getSkippedReason()
+    {
+        return skippedReason;
     }
 
     @EventField
@@ -130,5 +150,17 @@ public class VerifierQueryEvent
     public String getErrorMessage()
     {
         return errorMessage;
+    }
+
+    @EventField
+    public QueryFailure getFinalQueryFailure()
+    {
+        return finalQueryFailure;
+    }
+
+    @EventField
+    public List<QueryFailure> getQueryFailures()
+    {
+        return queryFailures;
     }
 }

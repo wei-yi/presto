@@ -23,7 +23,6 @@ import com.facebook.presto.spi.plan.TableScanNode;
 import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.assertions.BasePlanTest;
 import com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder;
 import com.facebook.presto.testing.TestingTransactionHandle;
@@ -38,6 +37,7 @@ import org.testng.annotations.Test;
 
 import java.util.Optional;
 
+import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.FINAL;
 import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.PARTIAL;
@@ -54,7 +54,6 @@ public class TestValidateAggregationsWithDefaultValues
 
     private Metadata metadata;
     private PlanBuilder builder;
-    private Symbol symbol;
     private VariableReferenceExpression variable;
     private TableScanNode tableScanNode;
 
@@ -62,7 +61,7 @@ public class TestValidateAggregationsWithDefaultValues
     public void setup()
     {
         metadata = getQueryRunner().getMetadata();
-        builder = new PlanBuilder(new PlanNodeIdAllocator(), metadata);
+        builder = new PlanBuilder(TEST_SESSION, new PlanNodeIdAllocator(), metadata);
         ConnectorId connectorId = getCurrentConnectorId();
         TpchTableHandle nationTpchTableHandle = new TpchTableHandle("nation", 1.0);
         TableHandle nationTableHandle = new TableHandle(
@@ -71,8 +70,7 @@ public class TestValidateAggregationsWithDefaultValues
                 TestingTransactionHandle.create(),
                 Optional.of(new TpchTableLayoutHandle(nationTpchTableHandle, TupleDomain.all())));
         TpchColumnHandle nationkeyColumnHandle = new TpchColumnHandle("nationkey", BIGINT);
-        symbol = builder.symbol("nationkey");
-        variable = builder.variable(symbol);
+        variable = builder.variable("nationkey");
         tableScanNode = builder.tableScan(nationTableHandle, ImmutableList.of(variable), ImmutableMap.of(variable, nationkeyColumnHandle));
     }
 

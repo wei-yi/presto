@@ -20,11 +20,15 @@ import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.GroupingProperty;
 import com.facebook.presto.spi.LocalProperty;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SortingProperty;
 import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.LimitNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.TopNNode;
+import com.facebook.presto.spi.plan.ValuesNode;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.type.Type;
@@ -35,8 +39,7 @@ import com.facebook.presto.sql.planner.LiteralEncoder;
 import com.facebook.presto.sql.planner.Partitioning;
 import com.facebook.presto.sql.planner.PartitioningHandle;
 import com.facebook.presto.sql.planner.PartitioningScheme;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.SymbolAllocator;
+import com.facebook.presto.sql.planner.PlanVariableAllocator;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.PreferredProperties.PartitioningProperties;
 import com.facebook.presto.sql.planner.plan.AggregationNode;
@@ -54,7 +57,6 @@ import com.facebook.presto.sql.planner.plan.IndexSourceNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.LimitNode;
 import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.ProjectNode;
@@ -65,11 +67,9 @@ import com.facebook.presto.sql.planner.plan.SpatialJoinNode;
 import com.facebook.presto.sql.planner.plan.StatisticsWriterNode;
 import com.facebook.presto.sql.planner.plan.TableFinishNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
-import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.plan.UnionNode;
 import com.facebook.presto.sql.planner.plan.UnnestNode;
-import com.facebook.presto.sql.planner.plan.ValuesNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.SymbolReference;
@@ -105,6 +105,8 @@ import static com.facebook.presto.SystemSessionProperties.isForceSingleNodeOutpu
 import static com.facebook.presto.SystemSessionProperties.isRedistributeWrites;
 import static com.facebook.presto.SystemSessionProperties.isScaleWriters;
 import static com.facebook.presto.SystemSessionProperties.preferStreamingOperators;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.spi.plan.LimitNode.Step.PARTIAL;
 import static com.facebook.presto.sql.planner.FragmentTableScanCounter.getNumberOfTableScans;
 import static com.facebook.presto.sql.planner.FragmentTableScanCounter.hasMultipleTableScans;
 import static com.facebook.presto.sql.planner.PlannerUtils.toVariableReference;
@@ -112,6 +114,7 @@ import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_ARB
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SCALED_WRITER_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
+import static com.facebook.presto.sql.planner.SystemPartitioningHandle.isCompatibleSystemPartitioning;
 import static com.facebook.presto.sql.planner.iterative.rule.PickTableLayout.pushPredicateIntoTableScan;
 import static com.facebook.presto.sql.planner.optimizations.ActualProperties.Global.partitionedOn;
 import static com.facebook.presto.sql.planner.optimizations.ActualProperties.Global.singleStreamPartition;
@@ -150,9 +153,9 @@ public class AddExchanges
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
+    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, PlanVariableAllocator variableAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
     {
-        PlanWithProperties result = plan.accept(new Rewriter(idAllocator, symbolAllocator, session), PreferredProperties.any());
+        PlanWithProperties result = plan.accept(new Rewriter(idAllocator, variableAllocator, session), PreferredProperties.any());
         return result.getNode();
     }
 
@@ -160,7 +163,7 @@ public class AddExchanges
             extends InternalPlanVisitor<PlanWithProperties, PreferredProperties>
     {
         private final PlanNodeIdAllocator idAllocator;
-        private final SymbolAllocator symbolAllocator;
+        private final PlanVariableAllocator variableAllocator;
         private final TypeProvider types;
         private final Session session;
         private final boolean distributedIndexJoins;
@@ -172,11 +175,11 @@ public class AddExchanges
         private final int hashPartitionCount;
         private final ExchangeMaterializationStrategy exchangeMaterializationStrategy;
 
-        public Rewriter(PlanNodeIdAllocator idAllocator, SymbolAllocator symbolAllocator, Session session)
+        public Rewriter(PlanNodeIdAllocator idAllocator, PlanVariableAllocator variableAllocator, Session session)
         {
             this.idAllocator = idAllocator;
-            this.symbolAllocator = symbolAllocator;
-            this.types = symbolAllocator.getTypes();
+            this.variableAllocator = variableAllocator;
+            this.types = variableAllocator.getTypes();
             this.session = session;
             this.distributedIndexJoins = isDistributedIndexJoinEnabled(session);
             this.redistributeWrites = isRedistributeWrites(session);
@@ -322,7 +325,7 @@ public class AddExchanges
                 desiredProperties.add(new GroupingProperty<>(node.getPartitionBy()));
             }
             node.getOrderingScheme().ifPresent(orderingScheme ->
-                    orderingScheme.getOrderBy().stream()
+                    orderingScheme.getOrderByVariables().stream()
                             .map(variable -> new SortingProperty<>(variable, orderingScheme.getOrdering(variable)))
                             .forEach(desiredProperties::add));
 
@@ -466,7 +469,7 @@ public class AddExchanges
                 // skip the SortNode if the local properties guarantee ordering on Sort keys
                 // TODO: This should be extracted as a separate optimizer once the planner is able to reason about the ordering of each operator
                 List<LocalProperty<VariableReferenceExpression>> desiredProperties = new ArrayList<>();
-                for (VariableReferenceExpression variable : node.getOrderingScheme().getOrderBy()) {
+                for (VariableReferenceExpression variable : node.getOrderingScheme().getOrderByVariables()) {
                     desiredProperties.add(new SortingProperty<>(variable, node.getOrderingScheme().getOrdering(variable)));
                 }
 
@@ -508,7 +511,7 @@ public class AddExchanges
 
             if (!child.getProperties().isSingleNode()) {
                 child = withDerivedProperties(
-                        new LimitNode(idAllocator.getNextId(), child.getNode(), node.getCount(), true),
+                        new LimitNode(idAllocator.getNextId(), child.getNode(), node.getCount(), PARTIAL),
                         child.getProperties());
 
                 child = withDerivedProperties(
@@ -860,7 +863,7 @@ public class AddExchanges
         @Override
         public PlanWithProperties visitUnnest(UnnestNode node, PreferredProperties preferredProperties)
         {
-            PreferredProperties translatedPreferred = preferredProperties.translate(variable -> node.getReplicateVariables().contains(new Symbol(variable.getName())) ? Optional.of(variable) : Optional.empty());
+            PreferredProperties translatedPreferred = preferredProperties.translate(variable -> node.getReplicateVariables().contains(variable) ? Optional.of(variable) : Optional.empty());
 
             return rebaseAndDeriveProperties(node, planChild(node, translatedPreferred));
         }
@@ -1182,7 +1185,7 @@ public class AddExchanges
                     // NOTE: new symbols for ExchangeNode output are required in order to keep plan logically correct with new local union below
 
                     List<VariableReferenceExpression> exchangeOutputLayout = node.getOutputVariables().stream()
-                            .map(symbolAllocator::newVariable)
+                            .map(variableAllocator::newVariable)
                             .collect(toImmutableList());
 
                     result = new ExchangeNode(
@@ -1226,7 +1229,7 @@ public class AddExchanges
                 List<List<VariableReferenceExpression>> distributedOutputLayouts)
         {
             // TODO: can we insert LOCAL exchange for one child SOURCE distributed and another HASH distributed?
-            if (getNumberOfTableScans(distributedChildren) == 0) {
+            if (getNumberOfTableScans(distributedChildren) == 0 && isSameOrSystemCompatiblePartitions(extractRemoteExchangePartitioningHandles(distributedChildren))) {
                 // No source distributed child, we can use insert LOCAL exchange
                 // TODO: if all children have the same partitioning, pass this partitioning to the parent
                 // instead of "arbitraryPartition".
@@ -1314,8 +1317,19 @@ public class AddExchanges
             List<Type> partitioningTypes = partitioningColumns.stream()
                     .map(VariableReferenceExpression::getType)
                     .collect(toImmutableList());
-            PartitioningHandle partitioningHandle = metadata.getPartitioningHandleForExchange(session, partitioningProviderCatalog, hashPartitionCount, partitioningTypes);
-            return Partitioning.create(partitioningHandle, partitioningColumns);
+            try {
+                PartitioningHandle partitioningHandle = metadata.getPartitioningHandleForExchange(session, partitioningProviderCatalog, hashPartitionCount, partitioningTypes);
+                return Partitioning.create(partitioningHandle, partitioningColumns);
+            }
+            catch (PrestoException e) {
+                if (e.getErrorCode().equals(NOT_SUPPORTED.toErrorCode())) {
+                    throw new PrestoException(
+                            NOT_SUPPORTED,
+                            format("Catalog \"%s\" does not support custom partitioning and cannot be used as a partitioning provider", partitioningProviderCatalog),
+                            e);
+                }
+                throw e;
+            }
         }
 
         // TODO: refactor this method into ExchangeNode#partitionedExchange once
@@ -1378,7 +1392,7 @@ public class AddExchanges
         Map<VariableReferenceExpression, VariableReferenceExpression> outputToInput = new HashMap<>();
         for (Map.Entry<VariableReferenceExpression, RowExpression> assignment : assignments.getMap().entrySet()) {
             if (castToExpression(assignment.getValue()) instanceof SymbolReference) {
-                outputToInput.put(assignment.getKey(), toVariableReference(Symbol.from(castToExpression(assignment.getValue())), types));
+                outputToInput.put(assignment.getKey(), toVariableReference(castToExpression(assignment.getValue()), types));
             }
         }
         return outputToInput;
@@ -1477,6 +1491,46 @@ public class AddExchanges
         public ActualProperties getProperties()
         {
             return properties;
+        }
+    }
+
+    private static boolean isSameOrSystemCompatiblePartitions(List<PartitioningHandle> partitioningHandles)
+    {
+        for (int i = 0; i < partitioningHandles.size() - 1; i++) {
+            PartitioningHandle first = partitioningHandles.get(i);
+            PartitioningHandle second = partitioningHandles.get(i + 1);
+            if (!first.equals(second) && !isCompatibleSystemPartitioning(first, second)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static List<PartitioningHandle> extractRemoteExchangePartitioningHandles(List<PlanNode> nodes)
+    {
+        ImmutableList.Builder<PartitioningHandle> handles = ImmutableList.builder();
+        nodes.forEach(node -> node.accept(new ExchangePartitioningHandleExtractor(), handles));
+        return handles.build();
+    }
+
+    private static class ExchangePartitioningHandleExtractor
+            extends InternalPlanVisitor<Void, ImmutableList.Builder<PartitioningHandle>>
+    {
+        @Override
+        public Void visitExchange(ExchangeNode node, ImmutableList.Builder<PartitioningHandle> handles)
+        {
+            checkArgument(node.getScope().isRemote(), "scope is expected to be remote: %s", node.getScope());
+            handles.add(node.getPartitioningScheme().getPartitioning().getHandle());
+            return null;
+        }
+
+        @Override
+        public Void visitPlan(PlanNode node, ImmutableList.Builder<PartitioningHandle> handles)
+        {
+            for (PlanNode source : node.getSources()) {
+                source.accept(this, handles);
+            }
+            return null;
         }
     }
 }

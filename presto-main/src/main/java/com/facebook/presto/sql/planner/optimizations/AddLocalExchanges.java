@@ -20,13 +20,15 @@ import com.facebook.presto.spi.ConstantProperty;
 import com.facebook.presto.spi.GroupingProperty;
 import com.facebook.presto.spi.LocalProperty;
 import com.facebook.presto.spi.SortingProperty;
+import com.facebook.presto.spi.plan.LimitNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
+import com.facebook.presto.spi.plan.TopNNode;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.Partitioning;
 import com.facebook.presto.sql.planner.PartitioningScheme;
-import com.facebook.presto.sql.planner.SymbolAllocator;
+import com.facebook.presto.sql.planner.PlanVariableAllocator;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.StreamPropertyDerivations.StreamProperties;
 import com.facebook.presto.sql.planner.plan.AggregationNode;
@@ -39,17 +41,17 @@ import com.facebook.presto.sql.planner.plan.IndexJoinNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.LimitNode;
 import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.SemiJoinNode;
 import com.facebook.presto.sql.planner.plan.SortNode;
 import com.facebook.presto.sql.planner.plan.SpatialJoinNode;
+import com.facebook.presto.sql.planner.plan.StatisticAggregations;
 import com.facebook.presto.sql.planner.plan.StatisticsWriterNode;
 import com.facebook.presto.sql.planner.plan.TableFinishNode;
+import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
-import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.plan.UnionNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
@@ -66,6 +68,9 @@ import static com.facebook.presto.SystemSessionProperties.getTaskConcurrency;
 import static com.facebook.presto.SystemSessionProperties.getTaskWriterCount;
 import static com.facebook.presto.SystemSessionProperties.isDistributedSortEnabled;
 import static com.facebook.presto.SystemSessionProperties.isSpillEnabled;
+import static com.facebook.presto.SystemSessionProperties.isTableWriterMergeOperatorEnabled;
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
@@ -104,22 +109,24 @@ public class AddLocalExchanges
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
+    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, PlanVariableAllocator variableAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
     {
-        PlanWithProperties result = plan.accept(new Rewriter(symbolAllocator, idAllocator, session), any());
+        PlanWithProperties result = plan.accept(new Rewriter(variableAllocator, idAllocator, session), any());
         return result.getNode();
     }
 
     private class Rewriter
             extends InternalPlanVisitor<PlanWithProperties, StreamPreferredProperties>
     {
+        private final PlanVariableAllocator variableAllocator;
         private final PlanNodeIdAllocator idAllocator;
         private final Session session;
         private final TypeProvider types;
 
-        public Rewriter(SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, Session session)
+        public Rewriter(PlanVariableAllocator variableAllocator, PlanNodeIdAllocator idAllocator, Session session)
         {
-            this.types = symbolAllocator.getTypes();
+            this.variableAllocator = variableAllocator;
+            this.types = variableAllocator.getTypes();
             this.idAllocator = idAllocator;
             this.session = session;
         }
@@ -341,7 +348,7 @@ public class AddLocalExchanges
                 desiredProperties.add(new GroupingProperty<>(node.getPartitionBy()));
             }
             node.getOrderingScheme().ifPresent(orderingScheme ->
-                    orderingScheme.getOrderBy().stream()
+                    orderingScheme.getOrderByVariables().stream()
                             .map(variable -> new SortingProperty<>(variable, orderingScheme.getOrdering(variable)))
                             .forEach(desiredProperties::add));
             Iterator<Optional<LocalProperty<VariableReferenceExpression>>> matchIterator = LocalProperties.match(child.getProperties().getLocalProperties(), desiredProperties).iterator();
@@ -473,19 +480,59 @@ public class AddLocalExchanges
         //
 
         @Override
-        public PlanWithProperties visitTableWriter(TableWriterNode node, StreamPreferredProperties parentPreferences)
+        public PlanWithProperties visitTableWriter(TableWriterNode originalTableWriterNode, StreamPreferredProperties parentPreferences)
         {
-            StreamPreferredProperties requiredProperties;
-            StreamPreferredProperties preferredProperties;
-            if (getTaskWriterCount(session) > 1) {
-                requiredProperties = fixedParallelism();
-                preferredProperties = fixedParallelism();
+            if (getTaskWriterCount(session) == 1) {
+                return planAndEnforceChildren(originalTableWriterNode, singleStream(), defaultParallelism(session));
             }
-            else {
-                requiredProperties = singleStream();
-                preferredProperties = defaultParallelism(session);
+
+            if (!isTableWriterMergeOperatorEnabled(session)) {
+                return planAndEnforceChildren(originalTableWriterNode, fixedParallelism(), fixedParallelism());
             }
-            return planAndEnforceChildren(node, requiredProperties, preferredProperties);
+
+            Optional<StatisticAggregations.Parts> statisticAggregations = originalTableWriterNode
+                    .getStatisticsAggregation()
+                    .map(aggregations -> aggregations.splitIntoPartialAndIntermediate(
+                            variableAllocator,
+                            metadata.getFunctionManager()));
+
+            PlanWithProperties tableWriter = planAndEnforceChildren(
+                    new TableWriterNode(
+                            originalTableWriterNode.getId(),
+                            originalTableWriterNode.getSource(),
+                            originalTableWriterNode.getTarget(),
+                            variableAllocator.newVariable("partialrowcount", BIGINT),
+                            variableAllocator.newVariable("partialfragments", VARBINARY),
+                            variableAllocator.newVariable("partialcontext", VARBINARY),
+                            originalTableWriterNode.getColumns(),
+                            originalTableWriterNode.getColumnNames(),
+                            originalTableWriterNode.getPartitioningScheme(),
+                            statisticAggregations.map(StatisticAggregations.Parts::getPartialAggregation)),
+                    fixedParallelism(),
+                    fixedParallelism());
+
+            PlanWithProperties gatheringExchange = deriveProperties(
+                    gatheringExchange(
+                            idAllocator.getNextId(),
+                            LOCAL,
+                            tableWriter.getNode()),
+                    tableWriter.getProperties());
+
+            return deriveProperties(
+                    new TableWriterMergeNode(
+                            idAllocator.getNextId(),
+                            gatheringExchange.getNode(),
+                            originalTableWriterNode.getRowCountVariable(),
+                            originalTableWriterNode.getFragmentVariable(),
+                            originalTableWriterNode.getTableCommitContextVariable(),
+                            statisticAggregations.map(StatisticAggregations.Parts::getIntermediateAggregation)),
+                    gatheringExchange.getProperties());
+        }
+
+        @Override
+        public PlanWithProperties visitTableWriteMerge(TableWriterMergeNode node, StreamPreferredProperties context)
+        {
+            throw new IllegalArgumentException("Unexpected TableWriterMergeNode");
         }
 
         //

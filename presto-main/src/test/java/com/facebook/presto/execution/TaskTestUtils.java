@@ -35,6 +35,7 @@ import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.type.TestingTypeManager;
 import com.facebook.presto.spiller.GenericSpillerFactory;
@@ -52,7 +53,6 @@ import com.facebook.presto.sql.planner.NodePartitioningManager;
 import com.facebook.presto.sql.planner.Partitioning;
 import com.facebook.presto.sql.planner.PartitioningScheme;
 import com.facebook.presto.sql.planner.PlanFragment;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.plan.PlanFragmentId;
 import com.facebook.presto.testing.TestingMetadata.TestingColumnHandle;
 import com.facebook.presto.testing.TestingMetadata.TestingTableHandle;
@@ -90,8 +90,6 @@ public final class TaskTestUtils
 
     public static final ImmutableList<TaskSource> EMPTY_SOURCES = ImmutableList.of();
 
-    public static final Symbol SYMBOL = new Symbol("column");
-
     public static final VariableReferenceExpression VARIABLE = new VariableReferenceExpression("column", BIGINT);
 
     public static final PlanFragment PLAN_FRAGMENT = new PlanFragment(
@@ -100,7 +98,9 @@ public final class TaskTestUtils
                     TABLE_SCAN_NODE_ID,
                     new TableHandle(CONNECTOR_ID, new TestingTableHandle(), TRANSACTION_HANDLE, Optional.empty()),
                     ImmutableList.of(VARIABLE),
-                    ImmutableMap.of(VARIABLE, new TestingColumnHandle("column", 0, BIGINT))),
+                    ImmutableMap.of(VARIABLE, new TestingColumnHandle("column", 0, BIGINT)),
+                    TupleDomain.all(),
+                    TupleDomain.all()),
             ImmutableSet.of(VARIABLE),
             SOURCE_DISTRIBUTION,
             ImmutableList.of(TABLE_SCAN_NODE_ID),

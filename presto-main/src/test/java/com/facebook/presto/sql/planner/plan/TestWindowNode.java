@@ -18,7 +18,10 @@ import com.facebook.presto.server.SliceDeserializer;
 import com.facebook.presto.server.SliceSerializer;
 import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.plan.Ordering;
+import com.facebook.presto.spi.plan.OrderingScheme;
 import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.spi.plan.ValuesNode;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.type.Type;
@@ -26,9 +29,7 @@ import com.facebook.presto.spi.type.TypeManager;
 import com.facebook.presto.sql.Serialization;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.planner.OrderingScheme;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.SymbolAllocator;
+import com.facebook.presto.sql.planner.PlanVariableAllocator;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
 import com.facebook.presto.type.TypeDeserializer;
@@ -66,14 +67,11 @@ import static org.testng.Assert.assertEquals;
 
 public class TestWindowNode
 {
-    private SymbolAllocator symbolAllocator;
+    private PlanVariableAllocator variableAllocator;
     private ValuesNode sourceNode;
-    private Symbol columnA;
-    private Symbol columnB;
-    private Symbol columnC;
-    private VariableReferenceExpression variableA;
-    private VariableReferenceExpression variableB;
-    private VariableReferenceExpression variableC;
+    private VariableReferenceExpression columnA;
+    private VariableReferenceExpression columnB;
+    private VariableReferenceExpression columnC;
 
     private final JsonCodec<WindowNode> codec;
 
@@ -86,25 +84,21 @@ public class TestWindowNode
     @BeforeClass
     public void setUp()
     {
-        symbolAllocator = new SymbolAllocator();
-        columnA = symbolAllocator.newSymbol("a", BIGINT);
-        columnB = symbolAllocator.newSymbol("b", BIGINT);
-        columnC = symbolAllocator.newSymbol("c", BIGINT);
-
-        variableA = new VariableReferenceExpression(columnA.getName(), BIGINT);
-        variableB = new VariableReferenceExpression(columnB.getName(), BIGINT);
-        variableC = new VariableReferenceExpression(columnC.getName(), BIGINT);
+        variableAllocator = new PlanVariableAllocator();
+        columnA = variableAllocator.newVariable("a", BIGINT);
+        columnB = variableAllocator.newVariable("b", BIGINT);
+        columnC = variableAllocator.newVariable("c", BIGINT);
 
         sourceNode = new ValuesNode(
                 newId(),
-                ImmutableList.of(variableA, variableB, variableC),
+                ImmutableList.of(columnA, columnB, columnC),
                 ImmutableList.of());
     }
 
     @Test
     public void testSerializationRoundtrip()
     {
-        VariableReferenceExpression windowVariable = symbolAllocator.newVariable("sum", BIGINT);
+        VariableReferenceExpression windowVariable = variableAllocator.newVariable("sum", BIGINT);
         FunctionHandle functionHandle = createTestMetadataManager().getFunctionManager().lookupFunction("sum", fromTypes(BIGINT));
         WindowNode.Frame frame = new WindowNode.Frame(
                 RANGE,
@@ -117,14 +111,12 @@ public class TestWindowNode
 
         PlanNodeId id = newId();
         WindowNode.Specification specification = new WindowNode.Specification(
-                ImmutableList.of(variableA),
-                Optional.of(new OrderingScheme(
-                        ImmutableList.of(variableB),
-                        ImmutableMap.of(variableB, SortOrder.ASC_NULLS_FIRST))));
+                ImmutableList.of(columnA),
+                Optional.of(new OrderingScheme(ImmutableList.of(new Ordering(columnB, SortOrder.ASC_NULLS_FIRST)))));
         CallExpression call = call("sum", functionHandle, BIGINT, new VariableReferenceExpression(columnC.getName(), BIGINT));
         Map<VariableReferenceExpression, WindowNode.Function> functions = ImmutableMap.of(windowVariable, new WindowNode.Function(call, frame));
-        Optional<VariableReferenceExpression> hashVariable = Optional.of(variableB);
-        Set<VariableReferenceExpression> prePartitionedInputs = ImmutableSet.of(variableA);
+        Optional<VariableReferenceExpression> hashVariable = Optional.of(columnB);
+        Set<VariableReferenceExpression> prePartitionedInputs = ImmutableSet.of(columnA);
         WindowNode windowNode = new WindowNode(
                 id,
                 sourceNode,
@@ -163,7 +155,6 @@ public class TestWindowNode
             binder.bind(SqlParser.class).toInstance(sqlParser);
             binder.bind(TypeManager.class).toInstance(typeManager);
             configBinder(binder).bindConfig(FeaturesConfig.class);
-            jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);
             newSetBinder(binder, Type.class);
             jsonBinder(binder).addSerializerBinding(Slice.class).to(SliceSerializer.class);
             jsonBinder(binder).addDeserializerBinding(Slice.class).to(SliceDeserializer.class);

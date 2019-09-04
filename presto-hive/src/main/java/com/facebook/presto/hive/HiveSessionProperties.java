@@ -75,7 +75,7 @@ public final class HiveSessionProperties
     private static final String STATISTICS_ENABLED = "statistics_enabled";
     private static final String PARTITION_STATISTICS_SAMPLE_SIZE = "partition_statistics_sample_size";
     private static final String IGNORE_CORRUPTED_STATISTICS = "ignore_corrupted_statistics";
-    private static final String COLLECT_COLUMN_STATISTICS_ON_WRITE = "collect_column_statistics_on_write";
+    public static final String COLLECT_COLUMN_STATISTICS_ON_WRITE = "collect_column_statistics_on_write";
     private static final String OPTIMIZE_MISMATCHED_BUCKET_COUNT = "optimize_mismatched_bucket_count";
     private static final String S3_SELECT_PUSHDOWN_ENABLED = "s3_select_pushdown_enabled";
     private static final String TEMPORARY_STAGING_DIRECTORY_ENABLED = "temporary_staging_directory_enabled";
@@ -84,6 +84,8 @@ public final class HiveSessionProperties
     private static final String TEMPORARY_TABLE_STORAGE_FORMAT = "temporary_table_storage_format";
     private static final String TEMPORARY_TABLE_COMPRESSION_CODEC = "temporary_table_compression_codec";
     public static final String PUSHDOWN_FILTER_ENABLED = "pushdown_filter_enabled";
+    public static final String VIRTUAL_BUCKET_COUNT = "virtual_bucket_count";
+    public static final String MAX_BUCKETS_FOR_GROUPED_EXECUTION = "max_buckets_for_grouped_execution";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
@@ -311,7 +313,7 @@ public final class HiveSessionProperties
                         false),
                 booleanProperty(
                         OPTIMIZE_MISMATCHED_BUCKET_COUNT,
-                        "Experimenal: Enable optimization to avoid shuffle when bucket count is compatible but not the same",
+                        "Experimental: Enable optimization to avoid shuffle when bucket count is compatible but not the same",
                         hiveClientConfig.isOptimizeMismatchedBucketCount(),
                         false),
                 booleanProperty(
@@ -355,7 +357,17 @@ public final class HiveSessionProperties
                 booleanProperty(
                         PUSHDOWN_FILTER_ENABLED,
                         "Experimental: enable complex filter pushdown",
-                        false,
+                        hiveClientConfig.isPushdownFilterEnabled(),
+                        false),
+                integerProperty(
+                        VIRTUAL_BUCKET_COUNT,
+                        "Number of virtual bucket assigned for unbucketed tables",
+                        0,
+                        false),
+                integerProperty(
+                        MAX_BUCKETS_FOR_GROUPED_EXECUTION,
+                        "maximum total buckets to allow using grouped execution",
+                        hiveClientConfig.getMaxBucketsForGroupedExecution(),
                         false));
     }
 
@@ -372,6 +384,11 @@ public final class HiveSessionProperties
     public static boolean shouldIgnoreTableBucketing(ConnectorSession session)
     {
         return session.getProperty(IGNORE_TABLE_BUCKETING, Boolean.class);
+    }
+
+    public static int getMaxBucketsForGroupedExecution(ConnectorSession session)
+    {
+        return session.getProperty(MAX_BUCKETS_FOR_GROUPED_EXECUTION, Integer.class);
     }
 
     public static boolean isForceLocalScheduling(ConnectorSession session)
@@ -594,6 +611,15 @@ public final class HiveSessionProperties
     public static boolean isPushdownFilterEnabled(ConnectorSession session)
     {
         return session.getProperty(PUSHDOWN_FILTER_ENABLED, Boolean.class);
+    }
+
+    public static int getVirtualBucketCount(ConnectorSession session)
+    {
+        int virtualBucketCount = session.getProperty(VIRTUAL_BUCKET_COUNT, Integer.class);
+        if (virtualBucketCount < 0) {
+            throw new PrestoException(INVALID_SESSION_PROPERTY, format("%s must not be negative: %s", VIRTUAL_BUCKET_COUNT, virtualBucketCount));
+        }
+        return virtualBucketCount;
     }
 
     public static PropertyMetadata<DataSize> dataSizeSessionProperty(String name, String description, DataSize defaultValue, boolean hidden)

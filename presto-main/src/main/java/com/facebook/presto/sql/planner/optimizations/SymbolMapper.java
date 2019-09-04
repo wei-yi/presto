@@ -14,13 +14,17 @@
 package com.facebook.presto.sql.planner.optimizations;
 
 import com.facebook.presto.spi.block.SortOrder;
+import com.facebook.presto.spi.plan.Ordering;
+import com.facebook.presto.spi.plan.OrderingScheme;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
+import com.facebook.presto.spi.plan.TopNNode;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.RowExpressionRewriter;
+import com.facebook.presto.spi.relation.RowExpressionTreeRewriter;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.sql.planner.OrderingScheme;
 import com.facebook.presto.sql.planner.PartitioningScheme;
 import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.TypeProvider;
@@ -30,10 +34,8 @@ import com.facebook.presto.sql.planner.plan.StatisticAggregations;
 import com.facebook.presto.sql.planner.plan.StatisticAggregationsDescriptor;
 import com.facebook.presto.sql.planner.plan.StatisticsWriterNode;
 import com.facebook.presto.sql.planner.plan.TableFinishNode;
+import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
-import com.facebook.presto.sql.planner.plan.TopNNode;
-import com.facebook.presto.sql.relational.RowExpressionRewriter;
-import com.facebook.presto.sql.relational.RowExpressionTreeRewriter;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.ExpressionRewriter;
 import com.facebook.presto.sql.tree.ExpressionTreeRewriter;
@@ -98,7 +100,7 @@ public class SymbolMapper
         if (canonical.equals(variable.getName())) {
             return variable;
         }
-        return new VariableReferenceExpression(canonical, types.get(new Symbol(canonical)));
+        return new VariableReferenceExpression(canonical, types.get(new SymbolReference(canonical)));
     }
 
     public Expression map(Expression value)
@@ -134,12 +136,14 @@ public class SymbolMapper
         // SymbolMapper inlines symbol with multiple level reference (SymbolInliner only inline single level).
         ImmutableList.Builder<VariableReferenceExpression> orderBy = ImmutableList.builder();
         ImmutableMap.Builder<VariableReferenceExpression, SortOrder> ordering = ImmutableMap.builder();
-        for (VariableReferenceExpression variable : orderingScheme.getOrderBy()) {
+        for (VariableReferenceExpression variable : orderingScheme.getOrderByVariables()) {
             VariableReferenceExpression translated = map(variable);
             orderBy.add(translated);
             ordering.put(translated, orderingScheme.getOrdering(variable));
         }
-        return new OrderingScheme(orderBy.build(), ordering.build());
+
+        ImmutableMap<VariableReferenceExpression, SortOrder> orderingMap = ordering.build();
+        return new OrderingScheme(orderBy.build().stream().map(variable -> new Ordering(variable, orderingMap.get(variable))).collect(toImmutableList()));
     }
 
     public AggregationNode map(AggregationNode node, PlanNode source)
@@ -191,8 +195,8 @@ public class SymbolMapper
     {
         ImmutableList.Builder<VariableReferenceExpression> variables = ImmutableList.builder();
         ImmutableMap.Builder<VariableReferenceExpression, SortOrder> orderings = ImmutableMap.builder();
-        Set<VariableReferenceExpression> seenCanonicals = new HashSet<>(node.getOrderingScheme().getOrderBy().size());
-        for (VariableReferenceExpression variable : node.getOrderingScheme().getOrderBy()) {
+        Set<VariableReferenceExpression> seenCanonicals = new HashSet<>(node.getOrderingScheme().getOrderByVariables().size());
+        for (VariableReferenceExpression variable : node.getOrderingScheme().getOrderByVariables()) {
             VariableReferenceExpression canonical = map(variable);
             if (seenCanonicals.add(canonical)) {
                 seenCanonicals.add(canonical);
@@ -201,11 +205,12 @@ public class SymbolMapper
             }
         }
 
+        ImmutableMap<VariableReferenceExpression, SortOrder> orderingMap = orderings.build();
         return new TopNNode(
                 newNodeId,
                 source,
                 node.getCount(),
-                new OrderingScheme(variables.build(), orderings.build()),
+                new OrderingScheme(variables.build().stream().map(variable -> new Ordering(variable, orderingMap.get(variable))).collect(toImmutableList())),
                 node.getStep());
     }
 
@@ -231,8 +236,7 @@ public class SymbolMapper
                 columns,
                 node.getColumnNames(),
                 node.getPartitioningScheme().map(partitioningScheme -> canonicalize(partitioningScheme, source)),
-                node.getStatisticsAggregation().map(this::map),
-                node.getStatisticsAggregationDescriptor().map(this::map));
+                node.getStatisticsAggregation().map(this::map));
     }
 
     public StatisticsWriterNode map(StatisticsWriterNode node, PlanNode source)
@@ -255,6 +259,17 @@ public class SymbolMapper
                 map(node.getRowCountVariable()),
                 node.getStatisticsAggregation().map(this::map),
                 node.getStatisticsAggregationDescriptor().map(descriptor -> descriptor.map(this::map)));
+    }
+
+    public TableWriterMergeNode map(TableWriterMergeNode node, PlanNode source)
+    {
+        return new TableWriterMergeNode(
+                node.getId(),
+                source,
+                map(node.getRowCountVariable()),
+                map(node.getFragmentVariable()),
+                map(node.getTableCommitContextVariable()),
+                node.getStatisticsAggregation().map(this::map));
     }
 
     private PartitioningScheme canonicalize(PartitioningScheme scheme, PlanNode source)

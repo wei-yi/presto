@@ -21,18 +21,18 @@ import com.facebook.presto.spi.Subfield;
 import com.facebook.presto.spi.Subfield.NestedField;
 import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.OrderingScheme;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.TopNNode;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.type.ArrayType;
 import com.facebook.presto.spi.type.RowType;
 import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.sql.planner.OrderingScheme;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.SymbolAllocator;
+import com.facebook.presto.sql.planner.PlanVariableAllocator;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.plan.AggregationNode;
 import com.facebook.presto.sql.planner.plan.ApplyNode;
@@ -50,7 +50,6 @@ import com.facebook.presto.sql.planner.plan.SimplePlanRewriter;
 import com.facebook.presto.sql.planner.plan.SortNode;
 import com.facebook.presto.sql.planner.plan.SpatialJoinNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
-import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.plan.UnionNode;
 import com.facebook.presto.sql.planner.plan.UnnestNode;
@@ -76,6 +75,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.facebook.presto.SystemSessionProperties.isPushdownSubfieldsEnabled;
 import static com.facebook.presto.spi.Subfield.allSubscripts;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.sql.relational.OriginalExpressionUtils.castToExpression;
@@ -94,11 +94,15 @@ public class PushdownSubfields
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
+    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, PlanVariableAllocator variableAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
     {
         requireNonNull(plan, "plan is null");
         requireNonNull(session, "session is null");
         requireNonNull(types, "types is null");
+
+        if (!isPushdownSubfieldsEnabled(session)) {
+            return plan;
+        }
 
         return SimplePlanRewriter.rewriteWith(new Rewriter(session, metadata, types), plan, new Rewriter.Context());
     }
@@ -130,7 +134,7 @@ public class PushdownSubfields
                 aggregation.getFilter().ifPresent(expression -> subfieldExtractor.process(castToExpression(expression), context.get()));
 
                 aggregation.getOrderBy()
-                        .map(OrderingScheme::getOrderBy)
+                        .map(OrderingScheme::getOrderByVariables)
                         .ifPresent(context.get().variables::addAll);
 
                 aggregation.getMask().ifPresent(context.get().variables::add);
@@ -228,7 +232,7 @@ public class PushdownSubfields
                 Expression expression = castToExpression(entry.getValue());
 
                 if (expression instanceof SymbolReference) {
-                    context.get().addAssignment(variable, new VariableReferenceExpression(((SymbolReference) expression).getName(), types.get(Symbol.from(expression))));
+                    context.get().addAssignment(variable, new VariableReferenceExpression(((SymbolReference) expression).getName(), types.get(expression)));
                     continue;
                 }
 
@@ -263,7 +267,7 @@ public class PushdownSubfields
         @Override
         public PlanNode visitSort(SortNode node, RewriteContext<Context> context)
         {
-            context.get().variables.addAll(node.getOrderingScheme().getOrderBy());
+            context.get().variables.addAll(node.getOrderingScheme().getOrderByVariables());
             return context.defaultRewrite(node, context.get());
         }
 
@@ -313,8 +317,7 @@ public class PushdownSubfields
                     node.getOutputVariables(),
                     newAssignments.build(),
                     node.getCurrentConstraint(),
-                    node.getEnforcedConstraint(),
-                    node.isTemporaryTable());
+                    node.getEnforcedConstraint());
         }
 
         @Override
@@ -327,7 +330,7 @@ public class PushdownSubfields
         @Override
         public PlanNode visitTopN(TopNNode node, RewriteContext<Context> context)
         {
-            context.get().variables.addAll(node.getOrderingScheme().getOrderBy());
+            context.get().variables.addAll(node.getOrderingScheme().getOrderByVariables());
             return context.defaultRewrite(node, context.get());
         }
 
@@ -336,7 +339,7 @@ public class PushdownSubfields
         {
             context.get().variables.add(node.getRowNumberVariable());
             context.get().variables.addAll(node.getPartitionBy());
-            context.get().variables.addAll(node.getOrderingScheme().getOrderBy());
+            context.get().variables.addAll(node.getOrderingScheme().getOrderByVariables());
             return context.defaultRewrite(node, context.get());
         }
 
@@ -417,7 +420,7 @@ public class PushdownSubfields
             context.get().variables.addAll(node.getSpecification().getPartitionBy());
 
             node.getSpecification().getOrderingScheme()
-                    .map(OrderingScheme::getOrderBy)
+                    .map(OrderingScheme::getOrderByVariables)
                     .ifPresent(context.get().variables::addAll);
 
             node.getWindowFunctions().values().stream()
@@ -545,7 +548,7 @@ public class PushdownSubfields
             @Override
             protected Void visitSymbolReference(SymbolReference node, Context context)
             {
-                context.variables.add(new VariableReferenceExpression(node.getName(), typeProvider.get(Symbol.from(node))));
+                context.variables.add(new VariableReferenceExpression(node.getName(), typeProvider.get(node)));
                 return null;
             }
         }

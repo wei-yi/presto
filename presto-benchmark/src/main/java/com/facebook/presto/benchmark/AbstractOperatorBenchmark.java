@@ -17,7 +17,6 @@ import com.facebook.presto.Session;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.execution.TaskStateMachine;
-import com.facebook.presto.execution.warnings.WarningCollector;
 import com.facebook.presto.memory.MemoryPool;
 import com.facebook.presto.memory.QueryContext;
 import com.facebook.presto.metadata.Metadata;
@@ -48,11 +47,7 @@ import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spiller.SpillSpaceTracker;
 import com.facebook.presto.split.SplitSource;
 import com.facebook.presto.sql.gen.PageFunctionCompiler;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.HashGenerationOptimizer;
-import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.NodeRef;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.transaction.TransactionId;
 import com.google.common.collect.ImmutableList;
@@ -74,8 +69,7 @@ import static com.facebook.presto.SystemSessionProperties.getFilterAndProjectMin
 import static com.facebook.presto.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
 import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.sql.analyzer.ExpressionAnalyzer.getExpressionTypes;
-import static com.facebook.presto.sql.relational.SqlToRowExpressionTranslator.translate;
+import static com.facebook.presto.sql.relational.VariableToChannelTranslator.translate;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -180,7 +174,7 @@ public abstract class AbstractOperatorBenchmark
             public Operator createOperator(DriverContext driverContext)
             {
                 OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, "BenchmarkSource");
-                ConnectorPageSource pageSource = localQueryRunner.getPageSourceManager().createPageSource(session, split, columnHandles);
+                ConnectorPageSource pageSource = localQueryRunner.getPageSourceManager().createPageSource(session, split, tableHandle, columnHandles);
                 return new PageSourceOperator(pageSource, operatorContext);
             }
 
@@ -215,32 +209,22 @@ public abstract class AbstractOperatorBenchmark
 
     protected final OperatorFactory createHashProjectOperator(int operatorId, PlanNodeId planNodeId, List<Type> types)
     {
-        ImmutableMap.Builder<Symbol, Type> symbolTypes = ImmutableMap.builder();
         ImmutableList.Builder<VariableReferenceExpression> variables = ImmutableList.builder();
         ImmutableMap.Builder<VariableReferenceExpression, Integer> variableToInputMapping = ImmutableMap.builder();
         ImmutableList.Builder<PageProjection> projections = ImmutableList.builder();
         for (int channel = 0; channel < types.size(); channel++) {
             VariableReferenceExpression variable = new VariableReferenceExpression("h" + channel, types.get(channel));
-            symbolTypes.put(new Symbol(variable.getName()), types.get(channel));
             variables.add(variable);
             variableToInputMapping.put(variable, channel);
             projections.add(new InputPageProjection(channel, types.get(channel)));
         }
 
-        Optional<Expression> hashExpression = HashGenerationOptimizer.getHashExpression(variables.build());
+        Optional<RowExpression> hashExpression = HashGenerationOptimizer.getHashExpression(localQueryRunner.getMetadata().getFunctionManager(), variables.build());
         verify(hashExpression.isPresent());
-        Map<NodeRef<Expression>, Type> expressionTypes = getExpressionTypes(
-                session,
-                localQueryRunner.getMetadata(),
-                localQueryRunner.getSqlParser(),
-                TypeProvider.copyOf(symbolTypes.build()),
-                hashExpression.get(),
-                ImmutableList.of(),
-                WarningCollector.NOOP);
-        RowExpression translated = translate(hashExpression.get(), expressionTypes, variableToInputMapping.build(), localQueryRunner.getMetadata().getFunctionManager(), localQueryRunner.getTypeManager(), session, false);
+        RowExpression translatedHashExpression = translate(hashExpression.get(), variableToInputMapping.build());
 
         PageFunctionCompiler functionCompiler = new PageFunctionCompiler(localQueryRunner.getMetadata(), 0);
-        projections.add(functionCompiler.compileProjection(translated, Optional.empty()).get());
+        projections.add(functionCompiler.compileProjection(translatedHashExpression, Optional.empty()).get());
 
         return new FilterAndProjectOperator.FilterAndProjectOperatorFactory(
                 operatorId,

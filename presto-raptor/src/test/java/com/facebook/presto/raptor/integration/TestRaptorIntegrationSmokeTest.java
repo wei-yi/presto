@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.raptor.integration;
 
+import com.facebook.presto.Session;
 import com.facebook.presto.spi.type.ArrayType;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.MaterializedRow;
@@ -33,6 +34,7 @@ import java.util.StringJoiner;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
+import static com.facebook.presto.SystemSessionProperties.COLOCATED_JOIN;
 import static com.facebook.presto.raptor.RaptorColumnHandle.SHARD_UUID_COLUMN_TYPE;
 import static com.facebook.presto.raptor.RaptorQueryRunner.createRaptorQueryRunner;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
@@ -60,7 +62,11 @@ public class TestRaptorIntegrationSmokeTest
     @SuppressWarnings("unused")
     public TestRaptorIntegrationSmokeTest()
     {
-        this(() -> createRaptorQueryRunner(ImmutableMap.of(), true, false, ImmutableMap.of("storage.orc.optimized-writer-stage", "DISABLED")));
+        this(() -> createRaptorQueryRunner(
+                ImmutableMap.of(),
+                true,
+                false,
+                ImmutableMap.of("storage.orc.optimized-writer-stage", "ENABLED_AND_VALIDATED")));
     }
 
     protected TestRaptorIntegrationSmokeTest(QueryRunnerSupplier supplier)
@@ -74,6 +80,13 @@ public class TestRaptorIntegrationSmokeTest
         assertUpdate("CREATE TABLE array_test AS SELECT ARRAY [1, 2, 3] AS c", 1);
         assertQuery("SELECT cardinality(c) FROM array_test", "SELECT 3");
         assertUpdate("DROP TABLE array_test");
+    }
+
+    @Test
+    public void testCreateTableUnsupportedType()
+    {
+        assertQueryFails("CREATE TABLE rowtype_test AS SELECT row(1) AS c", "Type not supported: row\\(integer\\)");
+        assertQueryFails("CREATE TABLE rowtype_test(row_type_field row(s varchar))", "Type not supported: row\\(s varchar\\)");
     }
 
     @Test
@@ -197,19 +210,10 @@ public class TestRaptorIntegrationSmokeTest
     @Test
     public void testShardingByTemporalDateColumnBucketed()
     {
-        // Make sure we have at least 2 different orderdate.
-        assertEquals(computeActual("SELECT count(DISTINCT orderdate) >= 2 FROM orders WHERE orderdate < date '1992-02-08'").getOnlyValue(), true);
+        String tableName = "test_shard_temporal_date_bucketed";
+        prepareTemporalShardedAndBucketedTable(tableName);
 
-        assertUpdate("CREATE TABLE test_shard_temporal_date_bucketed " +
-                        "WITH (temporal_column = 'orderdate', bucket_count = 10, bucketed_on = ARRAY ['orderkey']) AS " +
-                        "SELECT orderdate, orderkey " +
-                        "FROM orders " +
-                        "WHERE orderdate < date '1992-02-08'",
-                "SELECT count(*) " +
-                        "FROM orders " +
-                        "WHERE orderdate < date '1992-02-08'");
-
-        MaterializedResult results = computeActual("SELECT orderdate, \"$shard_uuid\" FROM test_shard_temporal_date_bucketed");
+        MaterializedResult results = computeActual("SELECT orderdate, \"$shard_uuid\" FROM " + tableName);
 
         // Each shard will only contain data of one date.
         SetMultimap<String, LocalDate> shardDateMap = HashMultimap.create();
@@ -222,8 +226,81 @@ public class TestRaptorIntegrationSmokeTest
         }
 
         // Make sure we have all the rows
-        assertQuery("SELECT orderdate, orderkey FROM test_shard_temporal_date_bucketed",
+        assertQuery("SELECT orderdate, orderkey FROM " + tableName,
                 "SELECT orderdate, orderkey FROM orders WHERE orderdate < date '1992-02-08'");
+    }
+
+    @Test
+    public void testColocatedJoin()
+    {
+        String tableName = "test_colocated_join";
+        prepareTemporalShardedAndBucketedTable(tableName);
+
+        Session colocated = Session.builder(getSession())
+                .setSystemProperty(COLOCATED_JOIN, "true")
+                .build();
+
+        assertQuery(
+                colocated,
+                format("SELECT t1.orderkey " +
+                                "FROM %s t1 JOIN %s t2 " +
+                                "ON t1.orderkey = t2.orderkey",
+                tableName,
+                tableName),
+                "SELECT t1.orderkey FROM " +
+                        "(SELECT * FROM orders WHERE orderdate < date '1992-02-08') t1 " +
+                        "JOIN " +
+                        "(SELECT * FROM orders WHERE orderdate < date '1992-02-08') t2 " +
+                        "   ON t1.orderkey = t2.orderkey");
+
+        // empty probe side
+        assertQuery(
+                colocated,
+                format("SELECT t1.orderkey " +
+                                "FROM " +
+                                "(SELECT * FROM %s WHERE orderdate < date '1970-01-01') t1 " +
+                                "JOIN %s t2 " +
+                                "   ON t1.orderkey = t2.orderkey",
+                        tableName,
+                        tableName),
+                "SELECT t1.orderkey FROM " +
+                        "(SELECT * FROM orders WHERE orderdate < date '1970-01-01') t1 " +
+                        "JOIN " +
+                        "(SELECT * FROM orders WHERE orderdate < date '1992-02-08') t2 " +
+                        "   ON t1.orderkey = t2.orderkey");
+
+        // empty build side
+        assertQuery(
+                colocated,
+                format("SELECT t1.orderkey " +
+                                "FROM " +
+                                "%s t1 JOIN " +
+                                "(SELECT * FROM %s WHERE orderdate < date '1970-01-01') t2 " +
+                                "   ON t1.orderkey = t2.orderkey",
+                        tableName,
+                        tableName),
+                "SELECT t1.orderkey FROM " +
+                        "(SELECT * FROM orders WHERE orderdate < date '1992-02-08') t1 " +
+                        "JOIN " +
+                        "(SELECT * FROM orders WHERE orderdate < date '1970-01-01') t2 " +
+                        "   ON t1.orderkey = t2.orderkey");
+    }
+
+    private void prepareTemporalShardedAndBucketedTable(String tableName)
+    {
+        // Make sure we have at least 2 different orderdate.
+        assertEquals(computeActual("SELECT count(DISTINCT orderdate) >= 2 FROM orders WHERE orderdate < date '1992-02-08'").getOnlyValue(), true);
+
+        assertUpdate(
+                format("CREATE TABLE %s " +
+                                "WITH (temporal_column = 'orderdate', bucket_count = 10, bucketed_on = ARRAY ['orderkey']) AS " +
+                                "SELECT orderdate, orderkey " +
+                                "FROM orders " +
+                                "WHERE orderdate < date '1992-02-08'",
+                        tableName),
+                "SELECT count(*) " +
+                        "FROM orders " +
+                        "WHERE orderdate < date '1992-02-08'");
     }
 
     @Test
@@ -773,6 +850,14 @@ public class TestRaptorIntegrationSmokeTest
     }
 
     @Test
+    public void testAlterTableUnsupportedType()
+    {
+        assertUpdate("CREATE TABLE test_alter_table_unsupported_type (c1 bigint, c2 bigint)");
+        assertQueryFails("ALTER TABLE test_alter_table_unsupported_type ADD COLUMN c3 row(bigint)", "Type not supported: row\\(bigint\\)");
+        assertUpdate("DROP TABLE test_alter_table_unsupported_type");
+    }
+
+    @Test
     public void testDelete()
     {
         assertUpdate("CREATE TABLE test_delete_table (c1 bigint, c2 bigint)");
@@ -794,5 +879,11 @@ public class TestRaptorIntegrationSmokeTest
         assertQuery("SELECT * FROM test_delete_table", "VALUES (3, 1), (3, 2), (3, 3), (3, 4)");
 
         assertUpdate("DROP TABLE test_delete_table");
+    }
+
+    @Test
+    public void testTriggerBucketBalancer()
+    {
+        assertUpdate("CALL system.trigger_bucket_balancer()");
     }
 }

@@ -36,7 +36,7 @@ import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.sql.planner.Plan;
-import com.facebook.presto.sql.planner.SymbolAllocator;
+import com.facebook.presto.sql.planner.PlanVariableAllocator;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder;
 import com.facebook.presto.sql.planner.iterative.rule.test.RuleAssert.TestingStatsCalculator;
@@ -79,7 +79,7 @@ public class OptimizerAssert
     {
         checkState(plan == null, "plan has already been set");
 
-        PlanBuilder builder = new PlanBuilder(idAllocator, metadata);
+        PlanBuilder builder = new PlanBuilder(session, idAllocator, metadata);
         plan = planProvider.apply(builder);
         types = builder.getTypes();
         return this;
@@ -87,7 +87,7 @@ public class OptimizerAssert
 
     public void matches(PlanMatchPattern pattern)
     {
-        PlanNode actual = optimizer.optimize(plan, session, types, new SymbolAllocator(), idAllocator, WarningCollector.NOOP);
+        PlanNode actual = optimizer.optimize(plan, session, types, new PlanVariableAllocator(), idAllocator, WarningCollector.NOOP);
 
         if (!ImmutableSet.copyOf(plan.getOutputVariables()).equals(ImmutableSet.copyOf(actual.getOutputVariables()))) {
             fail(String.format(

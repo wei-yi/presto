@@ -20,13 +20,13 @@ import com.facebook.presto.matching.Pattern;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
 import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.ValuesNode;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.type.FunctionType;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.iterative.Rule;
 import com.facebook.presto.sql.planner.plan.AggregationNode;
@@ -37,8 +37,8 @@ import com.facebook.presto.sql.planner.plan.ProjectNode;
 import com.facebook.presto.sql.planner.plan.SpatialJoinNode;
 import com.facebook.presto.sql.planner.plan.StatisticAggregations;
 import com.facebook.presto.sql.planner.plan.TableFinishNode;
+import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
-import com.facebook.presto.sql.planner.plan.ValuesNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.facebook.presto.sql.planner.plan.WindowNode.Function;
 import com.facebook.presto.sql.relational.OriginalExpressionUtils;
@@ -68,6 +68,7 @@ import static com.facebook.presto.sql.planner.plan.Patterns.join;
 import static com.facebook.presto.sql.planner.plan.Patterns.project;
 import static com.facebook.presto.sql.planner.plan.Patterns.spatialJoin;
 import static com.facebook.presto.sql.planner.plan.Patterns.tableFinish;
+import static com.facebook.presto.sql.planner.plan.Patterns.tableWriterMergeNode;
 import static com.facebook.presto.sql.planner.plan.Patterns.tableWriterNode;
 import static com.facebook.presto.sql.planner.plan.Patterns.values;
 import static com.facebook.presto.sql.planner.plan.Patterns.window;
@@ -104,7 +105,8 @@ public class TranslateExpressions
                 new SpatialJoinExpressionTranslation(),
                 new AggregationExpressionTranslation(),
                 new TableFinishExpressionTranslation(),
-                new TableWriterExpressionTranslation());
+                new TableWriterExpressionTranslation(),
+                new TableWriterMergeExpressionTranslation());
     }
 
     private final class SpatialJoinExpressionTranslation
@@ -344,7 +346,7 @@ public class TranslateExpressions
             boolean changed = false;
             ImmutableMap.Builder<VariableReferenceExpression, AggregationNode.Aggregation> rewrittenAggregation = builder();
             for (Map.Entry<VariableReferenceExpression, AggregationNode.Aggregation> entry : node.getAggregations().entrySet()) {
-                AggregationNode.Aggregation rewritten = translateAggregation(entry.getValue(), context.getSession(), context.getSymbolAllocator().getTypes());
+                AggregationNode.Aggregation rewritten = translateAggregation(entry.getValue(), context.getSession(), context.getVariableAllocator().getTypes());
                 rewrittenAggregation.put(entry.getKey(), rewritten);
                 if (!rewritten.equals(entry.getValue())) {
                     changed = true;
@@ -431,8 +433,38 @@ public class TranslateExpressions
                         node.getColumns(),
                         node.getColumnNames(),
                         node.getPartitioningScheme(),
-                        rewrittenStatisticsAggregation,
-                        node.getStatisticsAggregationDescriptor()));
+                        rewrittenStatisticsAggregation));
+            }
+            return Result.empty();
+        }
+    }
+
+    private final class TableWriterMergeExpressionTranslation
+            implements Rule<TableWriterMergeNode>
+    {
+        @Override
+        public Pattern<TableWriterMergeNode> getPattern()
+        {
+            return tableWriterMergeNode();
+        }
+
+        @Override
+        public Result apply(TableWriterMergeNode node, Captures captures, Context context)
+        {
+            if (!node.getStatisticsAggregation().isPresent()) {
+                return Result.empty();
+            }
+
+            Optional<StatisticAggregations> rewrittenStatisticsAggregation = translateStatisticAggregation(node.getStatisticsAggregation().get(), context);
+
+            if (rewrittenStatisticsAggregation.isPresent()) {
+                return Result.ofPlanNode(new TableWriterMergeNode(
+                        node.getId(),
+                        node.getSource(),
+                        node.getRowCountVariable(),
+                        node.getFragmentVariable(),
+                        node.getTableCommitContextVariable(),
+                        rewrittenStatisticsAggregation));
             }
             return Result.empty();
         }
@@ -443,7 +475,7 @@ public class TranslateExpressions
         ImmutableMap.Builder<VariableReferenceExpression, AggregationNode.Aggregation> rewrittenAggregation = builder();
         boolean changed = false;
         for (Map.Entry<VariableReferenceExpression, AggregationNode.Aggregation> entry : statisticAggregations.getAggregations().entrySet()) {
-            AggregationNode.Aggregation rewritten = translateAggregation(entry.getValue(), context.getSession(), context.getSymbolAllocator().getTypes());
+            AggregationNode.Aggregation rewritten = translateAggregation(entry.getValue(), context.getSession(), context.getVariableAllocator().getTypes());
             rewrittenAggregation.put(entry.getKey(), rewritten);
             if (!rewritten.equals(entry.getValue())) {
                 changed = true;
@@ -509,12 +541,12 @@ public class TranslateExpressions
                 // the same mechanism in project and filter expression should be used here.
                 verify(lambdaExpression.getArguments().size() == functionType.getArgumentTypes().size());
                 Map<NodeRef<Expression>, Type> lambdaArgumentExpressionTypes = new HashMap<>();
-                Map<Symbol, Type> lambdaArgumentSymbolTypes = new HashMap<>();
+                Map<String, Type> lambdaArgumentSymbolTypes = new HashMap<>();
                 for (int j = 0; j < lambdaExpression.getArguments().size(); j++) {
                     LambdaArgumentDeclaration argument = lambdaExpression.getArguments().get(j);
                     Type type = functionType.getArgumentTypes().get(j);
                     lambdaArgumentExpressionTypes.put(NodeRef.of(argument), type);
-                    lambdaArgumentSymbolTypes.put(new Symbol(argument.getName().getValue()), type);
+                    lambdaArgumentSymbolTypes.put(argument.getName().getValue(), type);
                 }
                 // the lambda expression itself
                 builder.put(NodeRef.of(lambdaExpression), functionType)
@@ -566,7 +598,7 @@ public class TranslateExpressions
             return toRowExpression(
                     castToExpression(expression),
                     context.getSession(),
-                    analyze(castToExpression(expression), context.getSession(), context.getSymbolAllocator().getTypes()));
+                    analyze(castToExpression(expression), context.getSession(), context.getVariableAllocator().getTypes()));
         }
         return expression;
     }
@@ -594,7 +626,7 @@ public class TranslateExpressions
                 rewritten = toRowExpression(
                         castToExpression(expression),
                         context.getSession(),
-                        analyze(castToExpression(expression), context.getSession(), context.getSymbolAllocator().getTypes()));
+                        analyze(castToExpression(expression), context.getSession(), context.getVariableAllocator().getTypes()));
                 anyRewritten = true;
             }
             else {
@@ -605,7 +637,6 @@ public class TranslateExpressions
         if (!anyRewritten) {
             return Optional.empty();
         }
-
         return Optional.of(builder.build());
     }
 }

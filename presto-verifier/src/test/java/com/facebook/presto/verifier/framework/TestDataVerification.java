@@ -24,10 +24,8 @@ import com.facebook.presto.verifier.event.VerifierQueryEvent;
 import com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus;
 import com.facebook.presto.verifier.retry.RetryConfig;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.BeforeClass;
-import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import java.util.Optional;
@@ -42,6 +40,9 @@ import static com.facebook.presto.verifier.VerifierTestUtil.setupPresto;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.FAILED;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.SKIPPED;
 import static com.facebook.presto.verifier.event.VerifierQueryEvent.EventStatus.SUCCEEDED;
+import static com.facebook.presto.verifier.framework.SkippedReason.CONTROL_SETUP_QUERY_FAILED;
+import static com.facebook.presto.verifier.framework.SkippedReason.FAILED_BEFORE_CONTROL_QUERY;
+import static com.facebook.presto.verifier.framework.SkippedReason.NON_DETERMINISTIC;
 import static java.util.regex.Pattern.DOTALL;
 import static java.util.regex.Pattern.MULTILINE;
 import static org.testng.Assert.assertEquals;
@@ -56,11 +57,6 @@ public class TestDataVerification
 
     private static StandaloneQueryRunner queryRunner;
 
-    private VerifierConfig verifierConfig;
-    private PrestoAction prestoAction;
-    private QueryRewriter queryRewriter;
-    private ChecksumValidator checksumValidator;
-
     @BeforeClass
     public void setupClass()
             throws Exception
@@ -68,36 +64,44 @@ public class TestDataVerification
         queryRunner = setupPresto();
     }
 
-    @BeforeMethod
-    public void setup()
+    private DataVerification createVerification(String controlQuery, String testQuery)
     {
         String jdbcUrl = getJdbcUrl(queryRunner);
+        QueryConfiguration configuration = new QueryConfiguration(CATALOG, SCHEMA, Optional.of("user"), Optional.empty(), Optional.empty());
+        VerificationContext verificationContext = new VerificationContext();
         RetryConfig retryConfig = new RetryConfig();
-        verifierConfig = new VerifierConfig()
+        VerifierConfig verifierConfig = new VerifierConfig()
                 .setControlJdbcUrl(jdbcUrl)
                 .setTestJdbcUrl(jdbcUrl)
                 .setTestId(TEST_ID)
                 .setFailureResolverEnabled(false);
-        prestoAction = new PrestoAction(
+        PrestoAction prestoAction = new JdbcPrestoAction(
                 new PrestoExceptionClassifier(ImmutableSet.of(), ImmutableSet.of()),
+                configuration,
+                configuration,
+                verificationContext,
                 verifierConfig,
                 retryConfig,
                 retryConfig);
-        queryRewriter = new QueryRewriter(
+        QueryRewriter queryRewriter = new QueryRewriter(
                 new SqlParser(new SqlParserOptions().allowIdentifierSymbol(COLON, AT_SIGN)),
                 prestoAction,
+                ImmutableList.of(),
                 verifierConfig);
-        checksumValidator = new ChecksumValidator(
+        ChecksumValidator checksumValidator = new ChecksumValidator(
                 new SimpleColumnValidator(),
                 new FloatingPointColumnValidator(verifierConfig),
                 new OrderableArrayColumnValidator());
-    }
-
-    private DataVerification createVerification(String controlQuery, String testQuery)
-    {
-        QueryConfiguration configuration = new QueryConfiguration(CATALOG, SCHEMA, "test-user", Optional.empty(), ImmutableMap.of());
         SourceQuery sourceQuery = new SourceQuery(SUITE, NAME, controlQuery, testQuery, configuration, configuration);
-        return new DataVerification(prestoAction, sourceQuery, queryRewriter, ImmutableList.of(), verifierConfig, checksumValidator);
+        return new DataVerification(
+                (verification, e) -> false,
+                prestoAction,
+                sourceQuery,
+                queryRewriter,
+                ImmutableList.of(),
+                verificationContext,
+                verifierConfig,
+                checksumValidator);
     }
 
     @Test
@@ -168,6 +172,7 @@ public class TestDataVerification
     {
         Optional<VerifierQueryEvent> event = createVerification("SELECT * FROM test", "SELECT 1").run();
         assertTrue(event.isPresent());
+        assertEquals(event.get().getSkippedReason(), FAILED_BEFORE_CONTROL_QUERY.name());
         assertEvent(
                 event.get(),
                 SKIPPED,
@@ -181,6 +186,7 @@ public class TestDataVerification
     {
         Optional<VerifierQueryEvent> event = createVerification("INSERT INTO dest SELECT * FROM test", "SELECT 1").run();
         assertTrue(event.isPresent());
+        assertEquals(event.get().getSkippedReason(), CONTROL_SETUP_QUERY_FAILED.name());
         assertEvent(
                 event.get(),
                 SKIPPED,
@@ -194,6 +200,7 @@ public class TestDataVerification
     {
         Optional<VerifierQueryEvent> event = createVerification("SELECT rand()", "SELECT 2.0").run();
         assertTrue(event.isPresent());
+        assertEquals(event.get().getSkippedReason(), NON_DETERMINISTIC.name());
         assertEvent(
                 event.get(),
                 SKIPPED,

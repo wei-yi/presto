@@ -170,7 +170,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public TableStatistics getTableStatistics(Session session, TableHandle tableHandle, Constraint<ColumnHandle> constraint)
+    public TableStatistics getTableStatistics(Session session, TableHandle tableHandle, List<ColumnHandle> columnHandles, Constraint<ColumnHandle> constraint)
     {
         throw new UnsupportedOperationException();
     }
@@ -470,13 +470,13 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void commitPartition(Session session, OutputTableHandle tableHandle, int partitionId, Collection<Slice> fragments)
+    public void commitPartition(Session session, OutputTableHandle tableHandle, Collection<Slice> fragments)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void commitPartition(Session session, InsertTableHandle tableHandle, int partitionId, Collection<Slice> fragments)
+    public void commitPartition(Session session, InsertTableHandle tableHandle, Collection<Slice> fragments)
     {
         throw new UnsupportedOperationException();
     }

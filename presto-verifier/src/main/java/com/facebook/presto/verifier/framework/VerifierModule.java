@@ -15,6 +15,7 @@ package com.facebook.presto.verifier.framework;
 
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.parser.SqlParserOptions;
+import com.facebook.presto.sql.tree.Property;
 import com.facebook.presto.verifier.checksum.ChecksumValidator;
 import com.facebook.presto.verifier.checksum.FloatingPointColumnValidator;
 import com.facebook.presto.verifier.checksum.OrderableArrayColumnValidator;
@@ -27,6 +28,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.inject.Binder;
 import com.google.inject.Inject;
 import com.google.inject.Injector;
+import com.google.inject.Key;
 import com.google.inject.TypeLiteral;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
 
@@ -46,22 +48,30 @@ public class VerifierModule
     private final List<Class<? extends Predicate<SourceQuery>>> customQueryFilterClasses;
     private final SqlExceptionClassifier exceptionClassifier;
     private final List<FailureResolver> failureResolvers;
+    private final List<Property> tablePropertyOverrides;
 
     public VerifierModule(
             SqlParserOptions sqlParserOptions,
             List<Class<? extends Predicate<SourceQuery>>> customQueryFilterClasses,
             SqlExceptionClassifier exceptionClassifier,
-            List<FailureResolver> failureResolvers)
+            List<FailureResolver> failureResolvers,
+            List<Property> tablePropertyOverrides)
     {
         this.sqlParserOptions = requireNonNull(sqlParserOptions, "sqlParserOptions is null");
         this.customQueryFilterClasses = ImmutableList.copyOf(customQueryFilterClasses);
         this.exceptionClassifier = requireNonNull(exceptionClassifier, "exceptionClassifier is null");
         this.failureResolvers = requireNonNull(failureResolvers, "failureResolvers is null");
+        this.tablePropertyOverrides = requireNonNull(tablePropertyOverrides, "tablePropertyOverrides is null");
     }
 
     protected final void setup(Binder binder)
     {
         configBinder(binder).bindConfig(VerifierConfig.class);
+        configBinder(binder).bindConfig(QueryConfigurationOverridesConfig.class, ForControl.class, "control");
+        configBinder(binder).bindConfig(QueryConfigurationOverridesConfig.class, ForTest.class, "test");
+        binder.bind(QueryConfigurationOverrides.class).annotatedWith(ForControl.class).to(Key.get(QueryConfigurationOverridesConfig.class, ForControl.class)).in(SINGLETON);
+        binder.bind(QueryConfigurationOverrides.class).annotatedWith(ForTest.class).to(Key.get(QueryConfigurationOverridesConfig.class, ForTest.class)).in(SINGLETON);
+
         configBinder(binder).bindConfig(RetryConfig.class, ForClusterConnection.class, "cluster-connection");
         configBinder(binder).bindConfig(RetryConfig.class, ForPresto.class, "presto");
 
@@ -71,8 +81,8 @@ public class VerifierModule
 
         binder.bind(SqlParserOptions.class).toInstance(sqlParserOptions);
         binder.bind(SqlParser.class).in(SINGLETON);
-        binder.bind(QueryRewriter.class).in(SINGLETON);
-        binder.bind(PrestoAction.class).in(SINGLETON);
+        binder.bind(QueryRewriterFactory.class).to(PrestoQueryRewriterFactory.class).in(SINGLETON);
+        binder.bind(PrestoActionFactory.class).to(JdbcPrestoActionFactory.class).in(SINGLETON);
         binder.bind(VerificationManager.class).in(SINGLETON);
         binder.bind(VerificationFactory.class).in(SINGLETON);
         binder.bind(ChecksumValidator.class).in(SINGLETON);
@@ -82,6 +92,7 @@ public class VerifierModule
         binder.bind(new TypeLiteral<List<Predicate<SourceQuery>>>() {}).toProvider(new CustomQueryFilterProvider(customQueryFilterClasses));
         binder.bind(SqlExceptionClassifier.class).toInstance(exceptionClassifier);
         binder.bind(new TypeLiteral<List<FailureResolver>>() {}).toInstance(failureResolvers);
+        binder.bind(new TypeLiteral<List<Property>>() {}).toInstance(tablePropertyOverrides);
     }
 
     private static class CustomQueryFilterProvider

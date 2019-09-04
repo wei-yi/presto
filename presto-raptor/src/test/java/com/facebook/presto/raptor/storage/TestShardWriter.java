@@ -16,8 +16,8 @@ package com.facebook.presto.raptor.storage;
 import com.facebook.presto.RowPagesBuilder;
 import com.facebook.presto.block.BlockEncodingManager;
 import com.facebook.presto.metadata.FunctionManager;
+import com.facebook.presto.orc.OrcBatchRecordReader;
 import com.facebook.presto.orc.OrcDataSource;
-import com.facebook.presto.orc.OrcRecordReader;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
@@ -48,7 +48,6 @@ import java.util.List;
 
 import static com.facebook.presto.raptor.storage.OrcTestingUtil.createFileWriter;
 import static com.facebook.presto.raptor.storage.OrcTestingUtil.createReader;
-import static com.facebook.presto.raptor.storage.OrcTestingUtil.createReaderNoRows;
 import static com.facebook.presto.raptor.storage.OrcTestingUtil.fileOrcDataSource;
 import static com.facebook.presto.raptor.storage.OrcTestingUtil.octets;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
@@ -136,12 +135,12 @@ public class TestShardWriter
                 .row(456L, "bye \u2603", wrappedBuffer(bytes3), Double.NaN, false, arrayBlockOf(BIGINT), mapBlockOf(createVarcharType(5), BOOLEAN, "k3", false), arrayBlockOf(arrayType, arrayBlockOf(BIGINT)), timestampValue, timeValue, dateValue);
 
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(new EmptyClassLoader());
-                FileWriter writer = createFileWriter(columnIds, columnTypes, file, useOptimizedOrcWriter)) {
+                FileWriter writer = createFileWriter(columnIds, columnTypes, file)) {
             writer.appendPages(rowPagesBuilder.build());
         }
 
         try (OrcDataSource dataSource = fileOrcDataSource(file)) {
-            OrcRecordReader reader = createReader(dataSource, columnIds, columnTypes);
+            OrcBatchRecordReader reader = createReader(dataSource, columnIds, columnTypes);
             assertEquals(reader.getReaderRowCount(), 3);
             assertEquals(reader.getReaderPosition(), 0);
             assertEquals(reader.getFileRowCount(), reader.getReaderRowCount());
@@ -247,7 +246,7 @@ public class TestShardWriter
         // Test unsupported types
         for (Type type : ImmutableList.of(TIMESTAMP_WITH_TIME_ZONE, RowType.anonymous(ImmutableList.of(BIGINT, DOUBLE)))) {
             try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(new EmptyClassLoader())) {
-                createFileWriter(ImmutableList.of(1L), ImmutableList.of(type), file, useOptimizedOrcWriter);
+                createFileWriter(ImmutableList.of(1L), ImmutableList.of(type), file);
                 fail();
             }
             catch (PrestoException e) {
@@ -266,25 +265,13 @@ public class TestShardWriter
 
         File file = new File(directory, System.nanoTime() + ".orc");
 
-        try (FileWriter ignored = createFileWriter(columnIds, columnTypes, file, false)) {
-            // no rows
-        }
-
-        try (OrcDataSource dataSource = fileOrcDataSource(file)) {
-            OrcRecordReader reader = createReaderNoRows(dataSource);
-            assertEquals(reader.getReaderRowCount(), 0);
-            assertEquals(reader.getReaderPosition(), 0);
-
-            assertEquals(reader.nextBatch(), -1);
-        }
-
         // optimized ORC writer will flush metadata on close
-        try (FileWriter ignored = createFileWriter(columnIds, columnTypes, file, true)) {
+        try (FileWriter ignored = createFileWriter(columnIds, columnTypes, file)) {
             // no rows
         }
 
         try (OrcDataSource dataSource = fileOrcDataSource(file)) {
-            OrcRecordReader reader = createReader(dataSource, columnIds, columnTypes);
+            OrcBatchRecordReader reader = createReader(dataSource, columnIds, columnTypes);
             assertEquals(reader.getReaderRowCount(), 0);
             assertEquals(reader.getReaderPosition(), 0);
 

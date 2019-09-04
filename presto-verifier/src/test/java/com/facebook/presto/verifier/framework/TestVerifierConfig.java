@@ -42,14 +42,6 @@ public class TestVerifierConfig
                 .setChecksumTimeout(new Duration(20, MINUTES))
                 .setControlTablePrefix("tmp_verifier_control")
                 .setTestTablePrefix("tmp_verifier_test")
-                .setControlCatalogOverride(null)
-                .setControlSchemaOverride(null)
-                .setControlUsernameOverride(null)
-                .setControlPasswordOverride(null)
-                .setTestCatalogOverride(null)
-                .setTestSchemaOverride(null)
-                .setTestUsernameOverride(null)
-                .setTestPasswordOverride(null)
                 .setWhitelist(null)
                 .setBlacklist(null)
                 .setSourceQuerySupplier("mysql")
@@ -63,7 +55,8 @@ public class TestVerifierConfig
                 .setRelativeErrorMargin(1e-4)
                 .setAbsoluteErrorMargin(1e-12)
                 .setRunTearDownOnResultMismatch(false)
-                .setFailureResolverEnabled(true));
+                .setFailureResolverEnabled(true)
+                .setVerificationResubmissionLimit(2));
     }
 
     @Test
@@ -81,14 +74,6 @@ public class TestVerifierConfig
                 .put("checksum.timeout", "4h")
                 .put("control.table-prefix", "local.control")
                 .put("test.table-prefix", "local.test")
-                .put("control.catalog-override", "control_catalog")
-                .put("control.schema-override", "control_schema")
-                .put("control.username-override", "control_username")
-                .put("control.password-override", "control_password")
-                .put("test.catalog-override", "test_catalog")
-                .put("test.schema-override", "test_schema")
-                .put("test.username-override", "test_username")
-                .put("test.password-override", "test_password")
                 .put("whitelist", "a,b,c")
                 .put("blacklist", "b,d,f")
                 .put("source-query.supplier", "custom-supplier")
@@ -103,6 +88,7 @@ public class TestVerifierConfig
                 .put("absolute-error-margin", "1e-14")
                 .put("run-teardown-on-result-mismatch", "true")
                 .put("failure-resolver.enabled", "false")
+                .put("verification-resubmission.limit", "1")
                 .build();
         VerifierConfig expected = new VerifierConfig()
                 .setAdditionalJdbcDriverPath("/path/to/file")
@@ -116,14 +102,6 @@ public class TestVerifierConfig
                 .setChecksumTimeout(new Duration(4, HOURS))
                 .setControlTablePrefix("local.control")
                 .setTestTablePrefix("local.test")
-                .setControlCatalogOverride("control_catalog")
-                .setControlSchemaOverride("control_schema")
-                .setControlUsernameOverride("control_username")
-                .setControlPasswordOverride("control_password")
-                .setTestCatalogOverride("test_catalog")
-                .setTestSchemaOverride("test_schema")
-                .setTestUsernameOverride("test_username")
-                .setTestPasswordOverride("test_password")
                 .setWhitelist("a,b,c")
                 .setBlacklist("b,d,f")
                 .setSourceQuerySupplier("custom-supplier")
@@ -137,7 +115,8 @@ public class TestVerifierConfig
                 .setRelativeErrorMargin(2e-5)
                 .setAbsoluteErrorMargin(1e-14)
                 .setRunTearDownOnResultMismatch(true)
-                .setFailureResolverEnabled(false);
+                .setFailureResolverEnabled(false)
+                .setVerificationResubmissionLimit(1);
 
         assertFullMapping(properties, expected);
     }

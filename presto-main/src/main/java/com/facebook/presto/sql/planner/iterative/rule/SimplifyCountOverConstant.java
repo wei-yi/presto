@@ -21,7 +21,7 @@ import com.facebook.presto.spi.function.StandardFunctionResolution;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
-import com.facebook.presto.sql.planner.Symbol;
+import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.iterative.Rule;
 import com.facebook.presto.sql.planner.plan.AggregationNode;
 import com.facebook.presto.sql.planner.plan.Assignments;
@@ -40,6 +40,7 @@ import java.util.Optional;
 
 import static com.facebook.presto.matching.Capture.newCapture;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.sql.planner.PlannerUtils.toVariableReference;
 import static com.facebook.presto.sql.planner.plan.Patterns.aggregation;
 import static com.facebook.presto.sql.planner.plan.Patterns.project;
 import static com.facebook.presto.sql.planner.plan.Patterns.source;
@@ -80,7 +81,7 @@ public class SimplifyCountOverConstant
             VariableReferenceExpression variable = entry.getKey();
             AggregationNode.Aggregation aggregation = entry.getValue();
 
-            if (isCountOverConstant(aggregation, child.getAssignments())) {
+            if (isCountOverConstant(aggregation, child.getAssignments(), context.getVariableAllocator().getTypes())) {
                 changed = true;
                 aggregations.put(variable, new AggregationNode.Aggregation(
                         new CallExpression(
@@ -110,7 +111,7 @@ public class SimplifyCountOverConstant
                 parent.getGroupIdVariable()));
     }
 
-    private boolean isCountOverConstant(AggregationNode.Aggregation aggregation, Assignments inputs)
+    private boolean isCountOverConstant(AggregationNode.Aggregation aggregation, Assignments inputs, TypeProvider types)
     {
         if (!functionResolution.isCountFunction(aggregation.getFunctionHandle()) || aggregation.getArguments().size() != 1) {
             return false;
@@ -119,7 +120,7 @@ public class SimplifyCountOverConstant
         RowExpression argument = aggregation.getArguments().get(0);
         Expression assigned = null;
         if (castToExpression(argument) instanceof SymbolReference) {
-            assigned = castToExpression(inputs.get(Symbol.from(castToExpression(argument))));
+            assigned = castToExpression(inputs.get(toVariableReference(castToExpression(argument), types)));
         }
 
         return assigned instanceof Literal && !(assigned instanceof NullLiteral);

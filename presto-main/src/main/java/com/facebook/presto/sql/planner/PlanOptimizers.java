@@ -13,7 +13,6 @@
  */
 package com.facebook.presto.sql.planner;
 
-import com.facebook.presto.connector.ConnectorManager;
 import com.facebook.presto.cost.CostCalculator;
 import com.facebook.presto.cost.CostCalculator.EstimatedExchanges;
 import com.facebook.presto.cost.CostComparator;
@@ -33,6 +32,7 @@ import com.facebook.presto.sql.planner.iterative.rule.DesugarAtTimeZone;
 import com.facebook.presto.sql.planner.iterative.rule.DesugarCurrentPath;
 import com.facebook.presto.sql.planner.iterative.rule.DesugarCurrentUser;
 import com.facebook.presto.sql.planner.iterative.rule.DesugarLambdaExpression;
+import com.facebook.presto.sql.planner.iterative.rule.DesugarRowSubscript;
 import com.facebook.presto.sql.planner.iterative.rule.DesugarTryExpression;
 import com.facebook.presto.sql.planner.iterative.rule.DetermineJoinDistributionType;
 import com.facebook.presto.sql.planner.iterative.rule.DetermineSemiJoinDistributionType;
@@ -149,7 +149,7 @@ public class PlanOptimizers
             FeaturesConfig featuresConfig,
             MBeanExporter exporter,
             SplitManager splitManager,
-            ConnectorManager connectorManager,
+            ConnectorPlanOptimizerManager planOptimizerManager,
             PageSourceManager pageSourceManager,
             StatsCalculator statsCalculator,
             CostCalculator costCalculator,
@@ -163,7 +163,7 @@ public class PlanOptimizers
                 false,
                 exporter,
                 splitManager,
-                connectorManager.getConnectorPlanOptimizerManager(),
+                planOptimizerManager,
                 pageSourceManager,
                 statsCalculator,
                 costCalculator,
@@ -232,7 +232,7 @@ public class PlanOptimizers
                 statsCalculator,
                 estimatedExchangesCostCalculator,
                 ImmutableSet.of(
-                        new InlineProjections(),
+                        new InlineProjections(metadata.getFunctionManager()),
                         new RemoveRedundantIdentityProjections()));
 
         IterativeOptimizer projectionPushDown = new IterativeOptimizer(
@@ -263,6 +263,7 @@ public class PlanOptimizers
                                 .addAll(new DesugarCurrentUser().rules())
                                 .addAll(new DesugarCurrentPath().rules())
                                 .addAll(new DesugarTryExpression().rules())
+                                .addAll(new DesugarRowSubscript(metadata, sqlParser).rules())
                                 .build()),
                 new IterativeOptimizer(
                         ruleStats,
@@ -299,7 +300,7 @@ public class PlanOptimizers
                                         new RewriteSpatialPartitioningAggregation(metadata)))
                                 .build()),
                 simplifyOptimizer,
-                new UnaliasSymbolReferences(),
+                new UnaliasSymbolReferences(metadata.getFunctionManager()),
                 new IterativeOptimizer(
                         ruleStats,
                         statsCalculator,
@@ -346,7 +347,7 @@ public class PlanOptimizers
                         statsCalculator,
                         estimatedExchangesCostCalculator,
                         ImmutableSet.of(
-                                new InlineProjections(),
+                                new InlineProjections(metadata.getFunctionManager()),
                                 new RemoveRedundantIdentityProjections(),
                                 new TransformCorrelatedSingleRowSubqueryToProject())),
                 new CheckSubqueryNodesAreRewritten(),
@@ -367,7 +368,7 @@ public class PlanOptimizers
                 inlineProjections,
                 simplifyOptimizer, // Re-run the SimplifyExpressions to simplify any recomposed expressions from other optimizations
                 projectionPushDown,
-                new UnaliasSymbolReferences(), // Run again because predicate pushdown and projection pushdown might add more projections
+                new UnaliasSymbolReferences(metadata.getFunctionManager()), // Run again because predicate pushdown and projection pushdown might add more projections
                 new PruneUnreferencedOutputs(), // Make sure to run this before index join. Filtered projections may not have all the columns.
                 new IndexJoinOptimizer(metadata), // Run this after projections and filters have been fully simplified and pushed down
                 new IterativeOptimizer(
@@ -440,7 +441,7 @@ public class PlanOptimizers
                 ImmutableSet.<Rule<?>>builder()
                         .add(new RemoveRedundantIdentityProjections())
                         .addAll(new ExtractSpatialJoins(metadata, splitManager, pageSourceManager, sqlParser).rules())
-                        .add(new InlineProjections())
+                        .add(new InlineProjections(metadata.getFunctionManager()))
                         .build()));
 
         if (!forceSingleNode) {
@@ -474,11 +475,20 @@ public class PlanOptimizers
 
         builder.add(predicatePushDown); // Run predicate push down one more time in case we can leverage new information from layouts' effective predicate
         builder.add(simplifyOptimizer); // Should be always run after PredicatePushDown
+
+        // TODO: move this before optimization if possible!!
+        // Replace all expressions with row expressions
+        builder.add(new IterativeOptimizer(
+                ruleStats,
+                statsCalculator,
+                costCalculator,
+                new TranslateExpressions(metadata, sqlParser).rules()));
+        // After this point, all planNodes should not contain OriginalExpression
+
         builder.add(projectionPushDown);
         builder.add(inlineProjections);
-        builder.add(new UnaliasSymbolReferences()); // Run unalias after merging projections to simplify projections more efficiently
+        builder.add(new UnaliasSymbolReferences(metadata.getFunctionManager())); // Run unalias after merging projections to simplify projections more efficiently
         builder.add(new PruneUnreferencedOutputs());
-
         builder.add(new IterativeOptimizer(
                 ruleStats,
                 statsCalculator,
@@ -486,7 +496,7 @@ public class PlanOptimizers
                 ImmutableSet.<Rule<?>>builder()
                         .add(new RemoveRedundantIdentityProjections())
                         .add(new PushRemoteExchangeThroughAssignUniqueId())
-                        .add(new InlineProjections())
+                        .add(new InlineProjections(metadata.getFunctionManager()))
                         .build()));
 
         // Optimizers above this don't understand local exchanges, so be careful moving this.
@@ -502,6 +512,7 @@ public class PlanOptimizers
                         new PushPartialAggregationThroughJoin(),
                         new PushPartialAggregationThroughExchange(metadata.getFunctionManager()),
                         new PruneJoinColumns())));
+
         builder.add(new IterativeOptimizer(
                 ruleStats,
                 statsCalculator,
@@ -509,24 +520,22 @@ public class PlanOptimizers
                 ImmutableSet.of(
                         new AddIntermediateAggregations(),
                         new RemoveRedundantIdentityProjections())));
+
+        // TODO: Do not move other PlanNode to SPI until ApplyConnectorOptimization is moved to the end of logical planning (i.e., where AddExchanges lives)
+        // TODO: Run PruneUnreferencedOutputs and UnaliasSymbolReferences once we have cleaned it up
+        // Pass a supplier so that we pickup connector optimizers that are installed later
+        builder.add(
+                new ApplyConnectorOptimization(planOptimizerManager::getOptimizers),
+                new IterativeOptimizer(
+                        ruleStats,
+                        statsCalculator,
+                        costCalculator,
+                        ImmutableSet.of(new RemoveRedundantIdentityProjections())));
+
         // DO NOT add optimizers that change the plan shape (computations) after this point
 
         // Precomputed hashes - this assumes that partitioning will not change
-        builder.add(new HashGenerationOptimizer());
-
-        // TODO: move this before optimization if possible!!
-        // Replace all expressions with row expressions
-        builder.add(new IterativeOptimizer(
-                ruleStats,
-                statsCalculator,
-                costCalculator,
-                new TranslateExpressions(metadata, sqlParser).rules()));
-
-        // TODO: Do not move other PlanNode to SPI until this rule is moved to the end of logical planning (i.e., where AddExchanges lives)
-        // TODO: The connector optimizer should not change plan shape (computations) at this point util #12960 is landed. (e.g., connector may pushdown filters to table scan but cannot add a new node)
-        // TODO: Run RemoveRedundantIdentityProjections and PruneUnreferencedOutputs once (1) we can have ProjectNode in SPI and (2) have moved the connector optimization above HashGenerationOptimizer
-        builder.add(new ApplyConnectorOptimization(planOptimizerManager.getOptimizers()));
-
+        builder.add(new HashGenerationOptimizer(metadata.getFunctionManager()));
         builder.add(new MetadataDeleteOptimizer(metadata));
         builder.add(new BeginTableWrite(metadata)); // HACK! see comments in BeginTableWrite
 

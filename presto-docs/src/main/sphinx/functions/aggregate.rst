@@ -279,12 +279,7 @@ Approximate Aggregate Functions
     Computes an approximate histogram with up to ``buckets`` number of buckets
     for all ``value``\ s with a per-item weight of ``weight``.  The keys of the
     returned map are roughly the center of the bin, and the entry is the total
-    weight of the bin.  The algorithm is based loosely on:
-
-    .. code-block:: none
-
-        Yael Ben-Haim and Elad Tom-Tov, "A streaming parallel decision tree algorithm",
-        J. Machine Learning Research 11 (2010), pp. 849--872.
+    weight of the bin.  The algorithm is based loosely on [BenHaimTomTov2010]_.
 
     ``buckets`` must be a ``bigint``. ``value`` and ``weight`` must be numeric.
 
@@ -294,6 +289,7 @@ Approximate Aggregate Functions
     for all ``value``\ s. This function is equivalent to the variant of
     :func:`numeric_histogram` that takes a ``weight``, with a per-item weight of ``1``.
     In this case, the total weight in the returned map is the count of items in the bin.
+
 
 Statistical Aggregate Functions
 -------------------------------
@@ -314,9 +310,9 @@ Statistical Aggregate Functions
 
     Returns the log-2 entropy of count input-values.
 
-    .. code-block:: none
+    .. math::
 
-        entropy(c) = \sum_i [ c_i / \sum_j [c_j] \log_2(\sum_j [c_j] / c_i) ]
+        \mathrm{entropy}(c) = \sum_i \left[ {c_i \over \sum_j [c_j]} \log_2\left({\sum_j [c_j] \over c_i}\right) \right].
 
     ``c`` must be a ``bigint`` column of non-negative values.
 
@@ -328,79 +324,11 @@ Statistical Aggregate Functions
     Returns the excess kurtosis of all input values. Unbiased estimate using
     the following expression:
 
-    .. code-block:: none
+    .. math::
 
-        kurtosis(x) = n(n+1)/((n-1)(n-2)(n-3))sum[(x_i-mean)^4]/stddev(x)^4-3(n-1)^2/((n-2)(n-3))
+        \mathrm{kurtosis}(x) = {n(n+1) \over (n-1)(n-2)(n-3)} { \sum[(x_i-\mu)^4] \over \sigma^4} -3{ (n-1)^2 \over (n-2)(n-3) },
 
-.. function:: classification_miss_rate(buckets, y, x, weight) -> array<double>
-
-    Computes the miss-rate part of the receiver operator curve with up to ``buckets`` number of buckets. Returns
-    an array of miss-rate values. ``y`` should be a boolean outcome value; ``x`` should be predictions, each
-    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
-
-    To get an ROC map, use this in conjunction with :func:`classification_recall`:
-
-    .. code-block:: none
-
-        MAP(classification_recall(200, outcome, prediction), classification_miss_rate(200, outcome, prediction))
-
-.. function:: classification_precision(buckets, y, x) -> array<double>
-
-    This function is equivalent to the variant of
-    :func:`classification_precision` that takes a ``weight``, with a per-item weight of ``1``.
-
-.. function:: classification_precision(buckets, y, x, weight) -> array<double>
-
-    Computes the precision part of the precision-recall curve with up to ``buckets`` number of buckets. Returns
-    an array of precision values. ``y`` should be a boolean outcome value; ``x`` should be predictions, each
-    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
-
-    To get a map of recall to precision, use this in conjunction with :func:`classification_recall`:
-
-    .. code-block:: none
-
-        MAP(classification_recall(200, outcome, prediction), classification_precision(200, outcome, prediction))
-
-.. function:: classification_precision(buckets, y, x) -> array<double>
-
-    This function is equivalent to the variant of
-    :func:`classification_precision` that takes a ``weight``, with a per-item weight of ``1``.
-
-.. function:: classification_recall(buckets, y, x, weight) -> array<double>
-
-    Computes the recall part of the precision-recall curve or the receiver operator charateristic curve
-    with up to ``buckets`` number of buckets. Returns an array of recall values.
-    ``y`` should be a boolean outcome value; ``x`` should be predictions, each
-    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
-
-    To get a map of recall to precision, use this in conjunction with :func:`classification_recall`:
-
-    .. code-block:: none
-
-        MAP(classification_recall(200, outcome, prediction), classification_precision(200, outcome, prediction))
-
-.. function:: classification_recall(buckets, y, x) -> array<double>
-
-    This function is equivalent to the variant of
-    :func:`classification_recall` that takes a ``weight``, with a per-item weight of ``1``.
-
-.. function:: classification_thresholds(buckets, y, x) -> array<double>
-
-    Computes the thresholds part of the precision-recall curve with up to ``buckets`` number of buckets. Returns
-    an array of thresholds. ``y`` should be a boolean outcome value; ``x`` should be predictions, each
-    between 0 and 1.
-
-    To get a map of thresholds to precision, use this in conjunction with :func:`classification_precision`:
-
-    .. code-block:: none
-
-        MAP(classification_thresholds(200, outcome, prediction), classification_precision(200, outcome, prediction))
-
-    To get a map of thresholds to recall, use this in conjunction with :func:`classification_recall`:
-
-    .. code-block:: none
-
-        MAP(classification_thresholds(200, outcome, prediction), classification_recall(200, outcome, prediction))
+   where :math:`\mu` is the mean, and :math:`\sigma` is the standard deviation.
 
 .. function:: regr_intercept(y, x) -> double
 
@@ -439,3 +367,205 @@ Statistical Aggregate Functions
 .. function:: var_samp(x) -> double
 
     Returns the sample variance of all input values.
+
+
+Classification Metrics Aggregate Functions
+------------------------------------------
+
+The following functions each measure how some metric of a binary
+`confusion matrix <https://en.wikipedia.org/wiki/Confusion_matrix>`_ changes as a function of
+classification thresholds. They are meant to be used in conjunction.
+
+For example, to find the `precision-recall curve <https://en.wikipedia.org/wiki/Precision_and_recall>`_, use
+
+    .. code-block:: none
+
+         WITH
+             recall_precision AS (
+                 SELECT
+                     CLASSIFICATION_RECALL(10000, correct, pred) AS recalls,
+                     CLASSIFICATION_PRECISION(10000, correct, pred) AS precisions
+                 FROM
+                    classification_dataset
+             )
+         SELECT
+             recall,
+             precision
+         FROM
+             recall_precision
+         CROSS JOIN UNNEST(recalls, precisions) AS t(recall, precision)
+
+To get the corresponding thresholds for these values, use
+
+    .. code-block:: none
+
+         WITH
+             recall_precision AS (
+                 SELECT
+                     CLASSIFICATION_THRESHOLDS(10000, correct, pred) AS thresholds,
+                     CLASSIFICATION_RECALL(10000, correct, pred) AS recalls,
+                     CLASSIFICATION_PRECISION(10000, correct, pred) AS precisions
+                 FROM
+                    classification_dataset
+             )
+         SELECT
+             threshold,
+             recall,
+             precision
+         FROM
+             recall_precision
+         CROSS JOIN UNNEST(thresholds, recalls, precisions) AS t(threshold, recall, precision)
+
+To find the `ROC curve <https://en.wikipedia.org/wiki/Receiver_operating_characteristic>`_, use
+
+    .. code-block:: none
+
+         WITH
+             fallout_recall AS (
+                 SELECT
+                     CLASSIFICATION_FALLOUT(10000, correct, pred) AS fallouts,
+                     CLASSIFICATION_RECALL(10000, correct, pred) AS recalls
+                 FROM
+                    classification_dataset
+             )
+         SELECT
+             fallout
+             recall,
+         FROM
+             recall_fallout
+         CROSS JOIN UNNEST(fallouts, recalls) AS t(fallout, recall)
+
+
+.. function:: classification_miss_rate(buckets, y, x, weight) -> array<double>
+
+    Computes the miss-rate with up to ``buckets`` number of buckets. Returns
+    an array of miss-rate values.
+
+    ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
+
+    The
+    `miss-rate <https://en.wikipedia.org/wiki/Type_I_and_type_II_errors#False_positive_and_false_negative_rates>`_
+    is defined as a sequence whose :math:`j`-th entry is
+
+    .. math ::
+
+        {
+            \sum_{i \;|\; x_i \leq t_j \bigwedge y_i = 1} \left[ w_i \right]
+            \over
+            \sum_{i \;|\; x_i \leq t_j \bigwedge y_i = 1} \left[ w_i \right]
+            +
+            \sum_{i \;|\; x_i > t_j \bigwedge y_i = 1} \left[ w_i \right]
+        },
+
+    where :math:`t_j` is the :math:`j`-th smallest threshold,
+    and :math:`y_i`, :math:`x_i`, and :math:`w_i` are the :math:`i`-th
+    entries of ``y``, ``x``, and ``weight``, respectively.
+
+.. function:: classification_miss_rate(buckets, y, x) -> array<double>
+
+    This function is equivalent to the variant of
+    :func:`classification_miss_rate` that takes a ``weight``, with a per-item weight of ``1``.
+
+.. function:: classification_fall_out(buckets, y, x, weight) -> array<double>
+
+    Computes the fall-out with up to ``buckets`` number of buckets. Returns
+    an array of fall-out values.
+
+    ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
+
+    The
+    `fall-out <https://en.wikipedia.org/wiki/Information_retrieval#Fall-out>`_
+    is defined as a sequence whose :math:`j`-th entry is
+
+    .. math ::
+
+        {
+            \sum_{i \;|\; x_i \leq t_j \bigwedge y_i = 0} \left[ w_i \right]
+            \over
+            \sum_{i \;|\; y_i = 0} \left[ w_i \right]
+        },
+
+    where :math:`t_j` is the :math:`j`-th smallest threshold,
+    and :math:`y_i`, :math:`x_i`, and :math:`w_i` are the :math:`i`-th
+    entries of ``y``, ``x``, and ``weight``, respectively.
+
+.. function:: classification_fall_out(buckets, y, x) -> array<double>
+
+    This function is equivalent to the variant of
+    :func:`classification_fall_out` that takes a ``weight``, with a per-item weight of ``1``.
+
+.. function:: classification_precision(buckets, y, x, weight) -> array<double>
+
+    Computes the precision with up to ``buckets`` number of buckets. Returns
+    an array of precision values.
+
+    ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
+
+    The
+    `precision <https://en.wikipedia.org/wiki/Positive_and_negative_predictive_values>`_
+    is defined as a sequence whose :math:`j`-th entry is
+
+    .. math ::
+
+        {
+            \sum_{i \;|\; x_i > t_j \bigwedge y_i = 1} \left[ w_i \right]
+            \over
+            \sum_{i \;|\; x_i > t_j} \left[ w_i \right]
+        },
+
+    where :math:`t_j` is the :math:`j`-th smallest threshold,
+    and :math:`y_i`, :math:`x_i`, and :math:`w_i` are the :math:`i`-th
+    entries of ``y``, ``x``, and ``weight``, respectively.
+
+.. function:: classification_precision(buckets, y, x) -> array<double>
+
+    This function is equivalent to the variant of
+    :func:`classification_precision` that takes a ``weight``, with a per-item weight of ``1``.
+
+.. function:: classification_recall(buckets, y, x, weight) -> array<double>
+
+    Computes the recall with up to ``buckets`` number of buckets. Returns
+    an array of recall values.
+
+    ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1; ``weight`` should be non-negative values, indicating the weight of the instance.
+
+    The
+    `recall <https://en.wikipedia.org/wiki/Precision_and_recall#Recall>`_
+    is defined as a sequence whose :math:`j`-th entry is
+
+    .. math ::
+
+        {
+            \sum_{i \;|\; x_i > t_j \bigwedge y_i = 1} \left[ w_i \right]
+            \over
+            \sum_{i \;|\; y_i = 1} \left[ w_i \right]
+        },
+
+    where :math:`t_j` is the :math:`j`-th smallest threshold,
+    and :math:`y_i`, :math:`x_i`, and :math:`w_i` are the :math:`i`-th
+    entries of ``y``, ``x``, and ``weight``, respectively.
+
+.. function:: classification_recall(buckets, y, x) -> array<double>
+
+    This function is equivalent to the variant of
+    :func:`classification_recall` that takes a ``weight``, with a per-item weight of ``1``.
+
+.. function:: classification_thresholds(buckets, y, x) -> array<double>
+
+    Computes the thresholds with up to ``buckets`` number of buckets. Returns
+    an array of threshold values.
+
+    ``y`` should be a boolean outcome value; ``x`` should be predictions, each
+    between 0 and 1.
+
+    The thresholds are defined as a sequence whose :math:`j`-th entry is the :math:`j`-th smallest threshold.
+
+--------------------------
+
+.. [BenHaimTomTov2010] Yael Ben-Haim and Elad Tom-Tov, "A streaming parallel decision tree algorithm",
+    J. Machine Learning Research 11 (2010), pp. 849--872.
+

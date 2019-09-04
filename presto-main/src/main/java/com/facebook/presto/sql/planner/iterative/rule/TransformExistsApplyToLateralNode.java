@@ -17,6 +17,7 @@ import com.facebook.presto.matching.Captures;
 import com.facebook.presto.matching.Pattern;
 import com.facebook.presto.metadata.FunctionManager;
 import com.facebook.presto.spi.function.StandardFunctionResolution;
+import com.facebook.presto.spi.plan.LimitNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.relation.CallExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
@@ -27,7 +28,6 @@ import com.facebook.presto.sql.planner.plan.AggregationNode.Aggregation;
 import com.facebook.presto.sql.planner.plan.ApplyNode;
 import com.facebook.presto.sql.planner.plan.Assignments;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.LimitNode;
 import com.facebook.presto.sql.planner.plan.ProjectNode;
 import com.facebook.presto.sql.relational.FunctionResolution;
 import com.facebook.presto.sql.tree.BooleanLiteral;
@@ -43,6 +43,7 @@ import com.google.common.collect.ImmutableMap;
 
 import java.util.Optional;
 
+import static com.facebook.presto.spi.plan.LimitNode.Step.FINAL;
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.sql.planner.plan.AggregationNode.globalAggregation;
@@ -121,7 +122,7 @@ public class TransformExistsApplyToLateralNode
         checkState(applyNode.getSubquery().getOutputVariables().isEmpty(), "Expected subquery output variables to be pruned");
 
         VariableReferenceExpression exists = getOnlyElement(applyNode.getSubqueryAssignments().getVariables());
-        VariableReferenceExpression subqueryTrue = context.getSymbolAllocator().newVariable("subqueryTrue", BOOLEAN);
+        VariableReferenceExpression subqueryTrue = context.getVariableAllocator().newVariable("subqueryTrue", BOOLEAN);
 
         Assignments.Builder assignments = Assignments.builder();
         assignments.putAll(identitiesAsSymbolReferences(applyNode.getInput().getOutputVariables()));
@@ -133,10 +134,10 @@ public class TransformExistsApplyToLateralNode
                         context.getIdAllocator().getNextId(),
                         applyNode.getSubquery(),
                         1L,
-                        false),
+                        FINAL),
                 Assignments.of(subqueryTrue, castToRowExpression(TRUE_LITERAL)));
 
-        PlanNodeDecorrelator decorrelator = new PlanNodeDecorrelator(context.getIdAllocator(), context.getSymbolAllocator(), context.getLookup());
+        PlanNodeDecorrelator decorrelator = new PlanNodeDecorrelator(context.getIdAllocator(), context.getVariableAllocator(), context.getLookup());
         if (!decorrelator.decorrelateFilters(subquery, applyNode.getCorrelation()).isPresent()) {
             return Optional.empty();
         }
@@ -154,7 +155,7 @@ public class TransformExistsApplyToLateralNode
 
     private PlanNode rewriteToDefaultAggregation(ApplyNode parent, Context context)
     {
-        VariableReferenceExpression count = context.getSymbolAllocator().newVariable("count", BIGINT);
+        VariableReferenceExpression count = context.getVariableAllocator().newVariable("count", BIGINT);
         VariableReferenceExpression exists = getOnlyElement(parent.getSubqueryAssignments().getVariables());
 
         return new LateralJoinNode(

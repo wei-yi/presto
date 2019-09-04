@@ -45,7 +45,8 @@ public abstract class AbstractVerifyCommand
                         getSqlParserOptions(),
                         getCustomQueryFilterClasses(),
                         getSqlExceptionClassifier(),
-                        getFailureResolvers()))
+                        getFailureResolvers(),
+                        getTablePropertyOverrides()))
                 .add(new SourceQueryModule(getCustomSourceQuerySupplierTypes()))
                 .add(new EventClientModule(getCustomEventClientTypes()))
                 .addAll(getAdditionalModules())
@@ -53,7 +54,6 @@ public abstract class AbstractVerifyCommand
         Injector injector = null;
         try {
             injector = app.strictConfig().initialize();
-            injector.getInstance(VerificationManager.class).start();
         }
         catch (Exception e) {
             throwIfUnchecked(e);

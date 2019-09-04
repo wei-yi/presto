@@ -25,8 +25,12 @@ import com.facebook.presto.spi.GroupingProperty;
 import com.facebook.presto.spi.LocalProperty;
 import com.facebook.presto.spi.SortingProperty;
 import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.OrderingScheme;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.TopNNode;
+import com.facebook.presto.spi.plan.ValuesNode;
 import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.relation.ConstantExpression;
 import com.facebook.presto.spi.relation.RowExpression;
@@ -36,9 +40,7 @@ import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.ExpressionDomainTranslator;
 import com.facebook.presto.sql.planner.ExpressionInterpreter;
 import com.facebook.presto.sql.planner.NoOpSymbolResolver;
-import com.facebook.presto.sql.planner.OrderingScheme;
 import com.facebook.presto.sql.planner.RowExpressionInterpreter;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.ActualProperties.Global;
 import com.facebook.presto.sql.planner.plan.AggregationNode;
@@ -55,7 +57,6 @@ import com.facebook.presto.sql.planner.plan.IndexSourceNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
 import com.facebook.presto.sql.planner.plan.JoinNode;
 import com.facebook.presto.sql.planner.plan.LateralJoinNode;
-import com.facebook.presto.sql.planner.plan.LimitNode;
 import com.facebook.presto.sql.planner.plan.MarkDistinctNode;
 import com.facebook.presto.sql.planner.plan.OutputNode;
 import com.facebook.presto.sql.planner.plan.ProjectNode;
@@ -66,11 +67,10 @@ import com.facebook.presto.sql.planner.plan.SortNode;
 import com.facebook.presto.sql.planner.plan.SpatialJoinNode;
 import com.facebook.presto.sql.planner.plan.StatisticsWriterNode;
 import com.facebook.presto.sql.planner.plan.TableFinishNode;
+import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TableWriterNode;
-import com.facebook.presto.sql.planner.plan.TopNNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.plan.UnnestNode;
-import com.facebook.presto.sql.planner.plan.ValuesNode;
 import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.facebook.presto.sql.relational.RowExpressionDomainTranslator;
 import com.facebook.presto.sql.tree.Expression;
@@ -241,7 +241,7 @@ public class PropertyDerivations
             // If the input is completely pre-partitioned and sorted, then the original input properties will be respected
             Optional<OrderingScheme> orderingScheme = node.getOrderingScheme();
             if (ImmutableSet.copyOf(node.getPartitionBy()).equals(node.getPrePartitionedInputs())
-                    && (!orderingScheme.isPresent() || node.getPreSortedOrderPrefix() == orderingScheme.get().getOrderBy().size())) {
+                    && (!orderingScheme.isPresent() || node.getPreSortedOrderPrefix() == orderingScheme.get().getOrderByVariables().size())) {
                 return properties;
             }
 
@@ -265,7 +265,7 @@ public class PropertyDerivations
             }
 
             orderingScheme.ifPresent(scheme ->
-                    scheme.getOrderBy().stream()
+                    scheme.getOrderByVariables().stream()
                             .map(column -> new SortingProperty<>(column, scheme.getOrdering(column)))
                             .forEach(localProperties::add));
 
@@ -320,7 +320,7 @@ public class PropertyDerivations
 
             ImmutableList.Builder<LocalProperty<VariableReferenceExpression>> localProperties = ImmutableList.builder();
             localProperties.add(new GroupingProperty<>(node.getPartitionBy()));
-            for (VariableReferenceExpression column : node.getOrderingScheme().getOrderBy()) {
+            for (VariableReferenceExpression column : node.getOrderingScheme().getOrderByVariables()) {
                 localProperties.add(new SortingProperty<>(column, node.getOrderingScheme().getOrdering(column)));
             }
 
@@ -334,7 +334,7 @@ public class PropertyDerivations
         {
             ActualProperties properties = Iterables.getOnlyElement(inputProperties);
 
-            List<SortingProperty<VariableReferenceExpression>> localProperties = node.getOrderingScheme().getOrderBy().stream()
+            List<SortingProperty<VariableReferenceExpression>> localProperties = node.getOrderingScheme().getOrderByVariables().stream()
                     .map(column -> new SortingProperty<>(column, node.getOrderingScheme().getOrdering(column)))
                     .collect(toImmutableList());
 
@@ -348,7 +348,7 @@ public class PropertyDerivations
         {
             ActualProperties properties = Iterables.getOnlyElement(inputProperties);
 
-            List<SortingProperty<VariableReferenceExpression>> localProperties = node.getOrderingScheme().getOrderBy().stream()
+            List<SortingProperty<VariableReferenceExpression>> localProperties = node.getOrderingScheme().getOrderByVariables().stream()
                     .map(column -> new SortingProperty<>(column, node.getOrderingScheme().getOrdering(column)))
                     .collect(toImmutableList());
 
@@ -539,7 +539,7 @@ public class PropertyDerivations
 
             ImmutableList.Builder<SortingProperty<VariableReferenceExpression>> localProperties = ImmutableList.builder();
             if (node.getOrderingScheme().isPresent()) {
-                node.getOrderingScheme().get().getOrderBy().stream()
+                node.getOrderingScheme().get().getOrderByVariables().stream()
                         .map(column -> new SortingProperty<>(column, node.getOrderingScheme().get().getOrdering(column)))
                         .forEach(localProperties::add);
             }
@@ -600,10 +600,10 @@ public class PropertyDerivations
 
             Map<VariableReferenceExpression, ConstantExpression> constants = new HashMap<>(properties.getConstants());
             if (isExpression(node.getPredicate())) {
-                TupleDomain<Symbol> tupleDomain = ExpressionDomainTranslator.fromPredicate(metadata, session, castToExpression(node.getPredicate()), types).getTupleDomain();
+                TupleDomain<String> tupleDomain = ExpressionDomainTranslator.fromPredicate(metadata, session, castToExpression(node.getPredicate()), types).getTupleDomain();
                 constants.putAll(extractFixedValuesToConstantExpressions(tupleDomain)
                         .map(values -> values.entrySet().stream()
-                                .collect(toImmutableMap(entry -> toVariableReference(entry.getKey(), types), Map.Entry::getValue)))
+                                .collect(toImmutableMap(entry -> toVariableReference(new SymbolReference(entry.getKey()), types), Map.Entry::getValue)))
                         .orElse(ImmutableMap.of()));
             }
             else {
@@ -644,28 +644,27 @@ public class PropertyDerivations
                     Object value = optimizer.optimize(NoOpSymbolResolver.INSTANCE);
 
                     if (value instanceof SymbolReference) {
-                        Symbol symbol = Symbol.from((SymbolReference) value);
-                        ConstantExpression existingConstantValue = constants.get(symbol);
+                        VariableReferenceExpression variable = toVariableReference((SymbolReference) value, types);
+                        ConstantExpression existingConstantValue = constants.get(variable);
                         if (existingConstantValue != null) {
-                            constants.put(assignment.getKey(), new ConstantExpression(value, type));
+                            constants.put(output, new ConstantExpression(value, type));
                         }
                     }
                     else if (!(value instanceof Expression)) {
-                        constants.put(assignment.getKey(), new ConstantExpression(value, type));
+                        constants.put(output, new ConstantExpression(value, type));
                     }
                 }
                 else {
                     Object value = new RowExpressionInterpreter(expression, metadata, session.toConnectorSession(), true).optimize();
 
                     if (value instanceof VariableReferenceExpression) {
-                        Symbol symbol = new Symbol(((VariableReferenceExpression) value).getName());
-                        ConstantExpression existingConstantValue = constants.get(symbol);
+                        ConstantExpression existingConstantValue = constants.get(value);
                         if (existingConstantValue != null) {
-                            constants.put(assignment.getKey(), new ConstantExpression(value, ((VariableReferenceExpression) value).getType()));
+                            constants.put(output, new ConstantExpression(value, expression.getType()));
                         }
                     }
                     else if (!(value instanceof RowExpression)) {
-                        constants.put(assignment.getKey(), new ConstantExpression(value, expression.getType()));
+                        constants.put(output, new ConstantExpression(value, expression.getType()));
                     }
                 }
             }
@@ -689,6 +688,12 @@ public class PropertyDerivations
             return ActualProperties.builder()
                     .global(properties.isSingleNode() ? singleStreamPartition() : arbitraryPartition())
                     .build();
+        }
+
+        @Override
+        public ActualProperties visitTableWriteMerge(TableWriterMergeNode node, List<ActualProperties> inputProperties)
+        {
+            return Iterables.getOnlyElement(inputProperties);
         }
 
         @Override
@@ -802,7 +807,7 @@ public class PropertyDerivations
                 RowExpression expression = assignment.getValue();
                 if (isExpression(expression)) {
                     if (castToExpression(expression) instanceof SymbolReference) {
-                        inputToOutput.put(toVariableReference(Symbol.from(castToExpression(expression)), types), assignment.getKey());
+                        inputToOutput.put(toVariableReference(castToExpression(expression), types), assignment.getKey());
                     }
                 }
                 else {
@@ -813,17 +818,6 @@ public class PropertyDerivations
             }
             return inputToOutput;
         }
-    }
-
-    private static Map<VariableReferenceExpression, VariableReferenceExpression> computeIdentityTranslations(Map<VariableReferenceExpression, Expression> assignments, TypeProvider types)
-    {
-        Map<VariableReferenceExpression, VariableReferenceExpression> inputToOutput = new HashMap<>();
-        for (Map.Entry<VariableReferenceExpression, Expression> assignment : assignments.entrySet()) {
-            if (assignment.getValue() instanceof SymbolReference) {
-                inputToOutput.put(toVariableReference(Symbol.from(assignment.getValue()), types), assignment.getKey());
-            }
-        }
-        return inputToOutput;
     }
 
     static boolean spillPossible(Session session, JoinNode.Type joinType)

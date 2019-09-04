@@ -5,7 +5,7 @@
     <parent>
         <groupId>com.facebook.presto</groupId>
         <artifactId>presto-root</artifactId>
-        <version>0.222-SNAPSHOT</version>
+        <version>0.226-SNAPSHOT</version>
     </parent>
 
     <artifactId>presto-hive</artifactId>
@@ -194,6 +194,16 @@
         </dependency>
 
         <dependency>
+            <groupId>com.google.cloud.bigdataoss</groupId>
+            <artifactId>util-hadoop</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.cloud.bigdataoss</groupId>
+            <artifactId>gcs-connector</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.xerial.snappy</groupId>
             <artifactId>snappy-java</artifactId>
             <scope>runtime</scope>
@@ -369,6 +379,7 @@
                                 <exclude>**/TestHiveClientGlueMetastore.java</exclude>
                                 <exclude>**/TestHiveDistributedAggregationsWithExchangeMaterialization.java</exclude>
                                 <exclude>**/TestHiveDistributedQueriesWithExchangeMaterialization.java</exclude>
+                                <exclude>**/TestHiveRecoverableGroupedExecution.java</exclude>
                             </excludes>
                         </configuration>
                     </plugin>
@@ -402,6 +413,22 @@
                         <configuration>
                             <includes>
                                 <include>**/TestHiveClientGlueMetastore.java</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>test-hive-recoverable-grouped-execution</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <includes>
+                                <include>**/TestHiveRecoverableGroupedExecution.java</include>
                             </includes>
                         </configuration>
                     </plugin>

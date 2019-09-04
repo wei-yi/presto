@@ -40,8 +40,8 @@ import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.enforc
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.equiJoinClause;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.join;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.values;
+import static com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder.castToRowExpression;
 import static com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder.constantExpressions;
-import static com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder.expression;
 import static com.facebook.presto.sql.planner.plan.JoinNode.DistributionType.PARTITIONED;
 import static com.facebook.presto.sql.planner.plan.JoinNode.DistributionType.REPLICATED;
 import static com.facebook.presto.sql.planner.plan.JoinNode.Type.FULL;
@@ -93,12 +93,12 @@ public class TestDetermineJoinDistributionType
                         p.join(
                                 joinType,
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("A1"))),
+                                        ImmutableList.of(p.variable("A1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 10), constantExpressions(BIGINT, 11))),
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("B1"))),
+                                        ImmutableList.of(p.variable("B1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 50), constantExpressions(BIGINT, 11))),
-                                ImmutableList.of(new JoinNode.EquiJoinClause(p.variable(p.symbol("A1", BIGINT)), p.variable(p.symbol("B1", BIGINT)))),
+                                ImmutableList.of(new JoinNode.EquiJoinClause(p.variable("A1", BIGINT), p.variable("B1", BIGINT))),
                                 ImmutableList.of(p.variable("A1", BIGINT), p.variable("B1", BIGINT)),
                                 Optional.empty()))
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, sessionDistributedJoin.name())
@@ -129,12 +129,12 @@ public class TestDetermineJoinDistributionType
                         p.join(
                                 joinType,
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("A1"))),
+                                        ImmutableList.of(p.variable("A1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 10), constantExpressions(BIGINT, 11))),
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("B1"))),
+                                        ImmutableList.of(p.variable("B1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 50), constantExpressions(BIGINT, 11))),
-                                ImmutableList.of(new JoinNode.EquiJoinClause(p.variable(p.symbol("A1", BIGINT)), p.variable(p.symbol("B1", BIGINT)))),
+                                ImmutableList.of(new JoinNode.EquiJoinClause(p.variable("A1", BIGINT), p.variable("B1", BIGINT))),
                                 ImmutableList.of(p.variable("A1", BIGINT), p.variable("B1", BIGINT)),
                                 Optional.empty()))
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, sessionDistributedJoin.name())
@@ -155,13 +155,13 @@ public class TestDetermineJoinDistributionType
                         p.join(
                                 INNER,
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("A1"))),
+                                        ImmutableList.of(p.variable("A1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 10), constantExpressions(BIGINT, 11))),
                                 p.enforceSingleRow(
                                         p.values(
-                                                ImmutableList.of(p.variable(p.symbol("B1"))),
+                                                ImmutableList.of(p.variable("B1")),
                                                 ImmutableList.of(constantExpressions(BIGINT, 50), constantExpressions(BIGINT, 11)))),
-                                ImmutableList.of(new JoinNode.EquiJoinClause(p.variable(p.symbol("A1", BIGINT)), p.variable(p.symbol("B1", BIGINT)))),
+                                ImmutableList.of(new JoinNode.EquiJoinClause(p.variable("A1", BIGINT), p.variable("B1", BIGINT))),
                                 ImmutableList.of(p.variable("A1", BIGINT), p.variable("B1", BIGINT)),
                                 Optional.empty()))
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
@@ -188,14 +188,14 @@ public class TestDetermineJoinDistributionType
                         p.join(
                                 joinType,
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("A1"))),
+                                        ImmutableList.of(p.variable("A1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 10), constantExpressions(BIGINT, 11))),
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("B1"))),
+                                        ImmutableList.of(p.variable("B1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 50), constantExpressions(BIGINT, 11))),
                                 ImmutableList.of(),
                                 ImmutableList.of(p.variable("A1", BIGINT), p.variable("B1", BIGINT)),
-                                Optional.of(expression("A1 * B1 > 100"))))
+                                Optional.of(castToRowExpression("A1 * B1 > 100"))))
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.name())
                 .matches(join(
                         joinType,
@@ -214,12 +214,12 @@ public class TestDetermineJoinDistributionType
                         p.join(
                                 INNER,
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("A1"))),
+                                        ImmutableList.of(p.variable("A1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 10), constantExpressions(BIGINT, 11))),
                                 p.values(
-                                        ImmutableList.of(p.variable(p.symbol("B1"))),
+                                        ImmutableList.of(p.variable("B1")),
                                         ImmutableList.of(constantExpressions(BIGINT, 50), constantExpressions(BIGINT, 11))),
-                                ImmutableList.of(new JoinNode.EquiJoinClause(p.variable(p.symbol("A1", BIGINT)), p.variable(p.symbol("B1", BIGINT)))),
+                                ImmutableList.of(new JoinNode.EquiJoinClause(p.variable("A1", BIGINT), p.variable("B1", BIGINT))),
                                 ImmutableList.of(p.variable("A1", BIGINT), p.variable("B1", BIGINT)),
                                 Optional.empty(),
                                 Optional.empty(),

@@ -16,8 +16,10 @@ package com.facebook.presto.hive;
 import com.facebook.presto.PagesIndexPageSorter;
 import com.facebook.presto.block.BlockEncodingManager;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
-import com.facebook.presto.hive.orc.DwrfPageSourceFactory;
-import com.facebook.presto.hive.orc.OrcPageSourceFactory;
+import com.facebook.presto.hive.gcs.HiveGcsConfig;
+import com.facebook.presto.hive.gcs.HiveGcsConfigurationInitializer;
+import com.facebook.presto.hive.orc.DwrfBatchPageSourceFactory;
+import com.facebook.presto.hive.orc.OrcBatchPageSourceFactory;
 import com.facebook.presto.hive.parquet.ParquetPageSourceFactory;
 import com.facebook.presto.hive.rcfile.RcFilePageSourceFactory;
 import com.facebook.presto.hive.s3.HiveS3Config;
@@ -112,14 +114,14 @@ public final class HiveTestUtils
 
     public static final PageSorter PAGE_SORTER = new PagesIndexPageSorter(new PagesIndex.TestingFactory(false));
 
-    public static Set<HivePageSourceFactory> getDefaultHiveDataStreamFactories(HiveClientConfig hiveClientConfig)
+    public static Set<HiveBatchPageSourceFactory> getDefaultHiveDataStreamFactories(HiveClientConfig hiveClientConfig)
     {
         FileFormatDataSourceStats stats = new FileFormatDataSourceStats();
         HdfsEnvironment testHdfsEnvironment = createTestHdfsEnvironment(hiveClientConfig);
-        return ImmutableSet.<HivePageSourceFactory>builder()
+        return ImmutableSet.<HiveBatchPageSourceFactory>builder()
                 .add(new RcFilePageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats))
-                .add(new OrcPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats))
-                .add(new DwrfPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats))
+                .add(new OrcBatchPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats))
+                .add(new DwrfBatchPageSourceFactory(TYPE_MANAGER, hiveClientConfig, testHdfsEnvironment, stats))
                 .add(new ParquetPageSourceFactory(TYPE_MANAGER, testHdfsEnvironment, stats))
                 .build();
     }
@@ -164,7 +166,12 @@ public final class HiveTestUtils
 
     public static HdfsEnvironment createTestHdfsEnvironment(HiveClientConfig config)
     {
-        HdfsConfiguration hdfsConfig = new HiveHdfsConfiguration(new HdfsConfigurationUpdater(config, new PrestoS3ConfigurationUpdater(new HiveS3Config())));
+        HdfsConfiguration hdfsConfig = new HiveHdfsConfiguration(
+                new HdfsConfigurationInitializer(
+                        config,
+                        new PrestoS3ConfigurationUpdater(new HiveS3Config()),
+                        new HiveGcsConfigurationInitializer(new HiveGcsConfig())),
+                ImmutableSet.of());
         return new HdfsEnvironment(hdfsConfig, config, new NoHdfsAuthentication());
     }
 

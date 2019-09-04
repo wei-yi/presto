@@ -51,7 +51,7 @@ public class TestPushPartialAggregationThroughJoin
                                         p.values(p.variable("RIGHT_EQUI"), p.variable("RIGHT_NON_EQUI"), p.variable("RIGHT_GROUP_BY"), p.variable("RIGHT_HASH")),
                                         ImmutableList.of(new EquiJoinClause(p.variable("LEFT_EQUI"), p.variable("RIGHT_EQUI"))),
                                         ImmutableList.of(p.variable("LEFT_GROUP_BY"), p.variable("LEFT_AGGR"), p.variable("RIGHT_GROUP_BY")),
-                                        Optional.of(expression("LEFT_NON_EQUI <= RIGHT_NON_EQUI")),
+                                        Optional.of(p.rowExpression("LEFT_NON_EQUI <= RIGHT_NON_EQUI")),
                                         Optional.of(p.variable("LEFT_HASH")),
                                         Optional.of(p.variable("RIGHT_HASH"))))
                         .addAggregation(p.variable("AVG", DOUBLE), expression("AVG(LEFT_AGGR)"), ImmutableList.of(DOUBLE))

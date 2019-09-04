@@ -18,6 +18,8 @@ import com.facebook.presto.hive.avro.PrestoAvroSerDe;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.Table;
 import com.facebook.presto.hive.util.FooterAwareRecordReader;
+import com.facebook.presto.orc.OrcReader;
+import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.ErrorCodeSupplier;
 import com.facebook.presto.spi.PrestoException;
@@ -27,13 +29,19 @@ import com.facebook.presto.spi.predicate.NullableValue;
 import com.facebook.presto.spi.type.CharType;
 import com.facebook.presto.spi.type.DecimalType;
 import com.facebook.presto.spi.type.Decimals;
+import com.facebook.presto.spi.type.NamedTypeSignature;
+import com.facebook.presto.spi.type.RowFieldName;
 import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.spi.type.TypeSignatureParameter;
 import com.facebook.presto.spi.type.VarcharType;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.compress.lzo.LzoCodec;
 import io.airlift.compress.lzo.LzopCodec;
 import io.airlift.slice.Slice;
@@ -82,6 +90,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Properties;
@@ -97,10 +106,12 @@ import static com.facebook.presto.hive.HiveColumnHandle.isPathColumnHandle;
 import static com.facebook.presto.hive.HiveColumnHandle.pathColumnHandle;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILE_MISSING_COLUMN_NAMES;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_INVALID_VIEW_DATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_SERDE_NOT_FOUND;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_TABLE_BUCKETING_IS_IGNORED;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static com.facebook.presto.hive.HivePartitionKey.HIVE_DEFAULT_DYNAMIC_PARTITION;
 import static com.facebook.presto.hive.util.ConfigurationUtils.copy;
@@ -113,6 +124,8 @@ import static com.facebook.presto.spi.type.Chars.isCharType;
 import static com.facebook.presto.spi.type.Chars.trimTrailingSpaces;
 import static com.facebook.presto.spi.type.DateType.DATE;
 import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
+import static com.facebook.presto.spi.type.Decimals.isLongDecimal;
+import static com.facebook.presto.spi.type.Decimals.isShortDecimal;
 import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.facebook.presto.spi.type.IntegerType.INTEGER;
 import static com.facebook.presto.spi.type.RealType.REAL;
@@ -148,6 +161,8 @@ import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Cate
 
 public final class HiveUtil
 {
+    private static final Pattern DEFAULT_HIVE_COLUMN_NAME_PATTERN = Pattern.compile("_col\\d+");
+
     public static final String PRESTO_VIEW_FLAG = "presto_view";
 
     private static final String VIEW_PREFIX = "/* Presto View: ";
@@ -899,6 +914,9 @@ public final class HiveUtil
             return path.toString();
         }
         if (isBucketColumnHandle(columnHandle)) {
+            if (!bucketNumber.isPresent()) {
+                throw new PrestoException(HIVE_TABLE_BUCKETING_IS_IGNORED, "Table bucketing is ignored. The virtual \"$bucket\" column cannot be referenced.");
+            }
             return String.valueOf(bucketNumber.getAsInt());
         }
         throw new PrestoException(NOT_SUPPORTED, "unsupported hidden column: " + columnHandle);
@@ -949,5 +967,161 @@ public final class HiveUtil
         catch (NumberFormatException e) {
             throw new PrestoException(HIVE_INVALID_METADATA, format("Invalid value for %s property: %s", key, value));
         }
+    }
+
+    public static Object typedPartitionKey(String value, Type type, String name, DateTimeZone hiveStorageTimeZone)
+    {
+        byte[] bytes = value.getBytes(UTF_8);
+
+        if (isHiveNull(bytes)) {
+            return null;
+        }
+        else if (type.equals(BOOLEAN)) {
+            return booleanPartitionKey(value, name);
+        }
+        else if (type.equals(BIGINT)) {
+            return bigintPartitionKey(value, name);
+        }
+        else if (type.equals(INTEGER)) {
+            return integerPartitionKey(value, name);
+        }
+        else if (type.equals(SMALLINT)) {
+            return smallintPartitionKey(value, name);
+        }
+        else if (type.equals(TINYINT)) {
+            return tinyintPartitionKey(value, name);
+        }
+        else if (type.equals(REAL)) {
+            return floatPartitionKey(value, name);
+        }
+        else if (type.equals(DOUBLE)) {
+            return doublePartitionKey(value, name);
+        }
+        else if (isVarcharType(type)) {
+            return varcharPartitionKey(value, name, type);
+        }
+        else if (isCharType(type)) {
+            return charPartitionKey(value, name, type);
+        }
+        else if (type.equals(DATE)) {
+            return datePartitionKey(value, name);
+        }
+        else if (type.equals(TIMESTAMP)) {
+            return timestampPartitionKey(value, hiveStorageTimeZone, name);
+        }
+        else if (isShortDecimal(type)) {
+            return shortDecimalPartitionKey(value, (DecimalType) type, name);
+        }
+        else if (isLongDecimal(type)) {
+            return longDecimalPartitionKey(value, (DecimalType) type, name);
+        }
+        else {
+            throw new PrestoException(NOT_SUPPORTED, format("Unsupported column type %s for partition column: %s", type.getDisplayName(), name));
+        }
+    }
+
+    public static List<HiveColumnHandle> getPhysicalHiveColumnHandles(List<HiveColumnHandle> columns, boolean useOrcColumnNames, OrcReader reader, Path path)
+    {
+        if (!useOrcColumnNames) {
+            return columns;
+        }
+
+        verifyFileHasColumnNames(reader.getColumnNames(), path);
+
+        Map<String, Integer> physicalNameOrdinalMap = buildPhysicalNameOrdinalMap(reader);
+        int nextMissingColumnIndex = physicalNameOrdinalMap.size();
+
+        ImmutableList.Builder<HiveColumnHandle> physicalColumns = ImmutableList.builder();
+        for (HiveColumnHandle column : columns) {
+            Integer physicalOrdinal = physicalNameOrdinalMap.get(column.getName());
+            if (physicalOrdinal == null) {
+                // if the column is missing from the file, assign it a column number larger
+                // than the number of columns in the file so the reader will fill it with nulls
+                physicalOrdinal = nextMissingColumnIndex;
+                nextMissingColumnIndex++;
+            }
+            physicalColumns.add(new HiveColumnHandle(column.getName(), column.getHiveType(), column.getTypeSignature(), physicalOrdinal, column.getColumnType(), column.getComment(), column.getRequiredSubfields()));
+        }
+        return physicalColumns.build();
+    }
+
+    private static void verifyFileHasColumnNames(List<String> physicalColumnNames, Path path)
+    {
+        if (!physicalColumnNames.isEmpty() && physicalColumnNames.stream().allMatch(physicalColumnName -> DEFAULT_HIVE_COLUMN_NAME_PATTERN.matcher(physicalColumnName).matches())) {
+            throw new PrestoException(
+                    HIVE_FILE_MISSING_COLUMN_NAMES,
+                    "ORC file does not contain column names in the footer: " + path);
+        }
+    }
+
+    private static Map<String, Integer> buildPhysicalNameOrdinalMap(OrcReader reader)
+    {
+        ImmutableMap.Builder<String, Integer> physicalNameOrdinalMap = ImmutableMap.builder();
+
+        int ordinal = 0;
+        for (String physicalColumnName : reader.getColumnNames()) {
+            physicalNameOrdinalMap.put(physicalColumnName, ordinal);
+            ordinal++;
+        }
+
+        return physicalNameOrdinalMap.build();
+    }
+
+    public static List<ColumnMetadata> assignFieldNamesForAnonymousRowColumns(List<ColumnMetadata> columns, TypeManager typeManager)
+    {
+        return columns.stream()
+                .map(column -> new ColumnMetadata(
+                        column.getName(),
+                        typeManager.getType(assignFieldNamesForAnonymousRowType(column.getType().getTypeSignature())),
+                        column.isNullable(),
+                        column.getComment(),
+                        column.getExtraInfo(),
+                        column.isHidden(),
+                        column.getProperties()))
+                .collect(toImmutableList());
+    }
+
+    private static TypeSignature assignFieldNamesForAnonymousRowType(TypeSignature typeSignature)
+    {
+        List<TypeSignatureParameter> parameters = typeSignature.getParameters();
+
+        if (typeSignature.getBase().equals(StandardTypes.ROW)) {
+            ImmutableList.Builder<TypeSignatureParameter> updatedParameters = ImmutableList.builder();
+            for (int i = 0; i < parameters.size(); i++) {
+                TypeSignatureParameter typeSignatureParameter = parameters.get(i);
+                checkArgument(typeSignatureParameter.isNamedTypeSignature(), "unexpected row type signature parameter: %s", typeSignatureParameter);
+                NamedTypeSignature namedTypeSignature = typeSignatureParameter.getNamedTypeSignature();
+                updatedParameters.add(TypeSignatureParameter.of(new NamedTypeSignature(
+                        Optional.of(namedTypeSignature.getFieldName().orElse(new RowFieldName("_field_" + i, false))),
+                        assignFieldNamesForAnonymousRowType(namedTypeSignature.getTypeSignature()))));
+            }
+            return new TypeSignature(StandardTypes.ROW, updatedParameters.build());
+        }
+
+        if (!parameters.isEmpty()) {
+            ImmutableList.Builder<TypeSignatureParameter> updatedParameters = ImmutableList.builder();
+            for (TypeSignatureParameter parameter : parameters) {
+                switch (parameter.getKind()) {
+                    case LONG:
+                    case VARIABLE:
+                        updatedParameters.add(parameter);
+                        continue;
+                    case TYPE:
+                        updatedParameters.add(TypeSignatureParameter.of(assignFieldNamesForAnonymousRowType(parameter.getTypeSignature())));
+                        break;
+                    case NAMED_TYPE:
+                        NamedTypeSignature namedTypeSignature = parameter.getNamedTypeSignature();
+                        updatedParameters.add(TypeSignatureParameter.of(new NamedTypeSignature(
+                                namedTypeSignature.getFieldName(),
+                                assignFieldNamesForAnonymousRowType(namedTypeSignature.getTypeSignature()))));
+                        break;
+                    default:
+                        throw new IllegalArgumentException("Unexpected parameter type: " + parameter.getKind());
+                }
+            }
+            return new TypeSignature(typeSignature.getBase(), updatedParameters.build());
+        }
+
+        return typeSignature;
     }
 }
