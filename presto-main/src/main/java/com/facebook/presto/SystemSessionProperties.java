@@ -112,6 +112,7 @@ public final class SystemSessionProperties
     public static final String OPTIMIZE_METADATA_QUERIES = "optimize_metadata_queries";
     public static final String FAST_INEQUALITY_JOINS = "fast_inequality_joins";
     public static final String QUERY_PRIORITY = "query_priority";
+    public static final String DBCLOUD_PERMISSION = "dbcloud_permission";
     public static final String SPILL_ENABLED = "spill_enabled";
     public static final String AGGREGATION_OPERATOR_UNSPILL_MEMORY_LIMIT = "aggregation_operator_unspill_memory_limit";
     public static final String OPTIMIZE_DISTINCT_AGGREGATIONS = "optimize_mixed_distinct_aggregations";
@@ -455,6 +456,11 @@ public final class SystemSessionProperties
                         QUERY_PRIORITY,
                         "The priority of queries. Larger numbers are higher priority",
                         1,
+                        false),
+                stringProperty(
+                        DBCLOUD_PERMISSION,
+                        "The permisson of users. differernt permission has differnt permission",
+                        "{}",
                         false),
                 booleanProperty(
                         PLAN_WITH_TABLE_NODE_PARTITIONING,
