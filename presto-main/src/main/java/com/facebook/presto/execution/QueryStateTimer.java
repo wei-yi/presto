@@ -36,6 +36,8 @@ class QueryStateTimer
     private final AtomicReference<Long> beginResourceWaitingNanos = new AtomicReference<>();
     private final AtomicReference<Long> beginDispatchingNanos = new AtomicReference<>();
     private final AtomicReference<Long> beginPlanningNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginPlanningPlanNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginPlanningPlanDistributionNanos = new AtomicReference<>();
     private final AtomicReference<Long> beginFinishingNanos = new AtomicReference<>();
     private final AtomicReference<Long> endNanos = new AtomicReference<>();
 
@@ -44,6 +46,9 @@ class QueryStateTimer
     private final AtomicReference<Duration> dispatchingTime = new AtomicReference<>();
     private final AtomicReference<Duration> executionTime = new AtomicReference<>();
     private final AtomicReference<Duration> planningTime = new AtomicReference<>();
+    private final AtomicReference<Duration> planningPlanTime = new AtomicReference<>();
+    private final AtomicReference<Duration> planningPlanDistribution = new AtomicReference<>();
+
     private final AtomicReference<Duration> finishingTime = new AtomicReference<>();
 
     private final AtomicReference<Long> beginAnalysisNanos = new AtomicReference<>();
@@ -95,6 +100,18 @@ class QueryStateTimer
         beginDispatching(now);
         dispatchingTime.compareAndSet(null, nanosSince(beginDispatchingNanos, now));
         beginPlanningNanos.compareAndSet(null, now);
+        beginPlanningPlanNanos.compareAndSet(null, beginPlanningNanos.get());
+    }
+
+    public void beginPlanningPlanDistribution()
+    {
+        beginPlanningPlanDistribution(tickerNanos());
+    }
+
+    private void beginPlanningPlanDistribution(long now)
+    {
+        beginPlanningPlanDistributionNanos.compareAndSet(null, now);
+        planningPlanTime.compareAndSet(null, nanosSince(beginPlanningPlanNanos, now));
     }
 
     public void beginStarting()
@@ -106,6 +123,7 @@ class QueryStateTimer
     {
         beginPlanning(now);
         planningTime.compareAndSet(null, nanosSince(beginPlanningNanos, now));
+        planningPlanDistribution.compareAndSet(null, nanosSince(beginPlanningPlanDistributionNanos, now));
     }
 
     public void beginRunning()
@@ -207,6 +225,16 @@ class QueryStateTimer
     public Duration getPlanningTime()
     {
         return getDuration(planningTime, beginPlanningNanos);
+    }
+
+    public Duration getPlanningPlanTime()
+    {
+        return getDuration(planningPlanTime, beginPlanningPlanNanos);
+    }
+
+    public Duration getPlanningPlanDistribution()
+    {
+        return getDuration(planningPlanDistribution, beginPlanningPlanDistributionNanos);
     }
 
     public Duration getFinishingTime()

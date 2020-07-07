@@ -311,6 +311,12 @@ public class SqlQueryExecution
 
                 metadata.beginQuery(getSession(), plan.getConnectors());
 
+                // transition to planning plan Distribution
+                if (!stateMachine.transitionToPlanningPlanDistribution()) {
+                    // query already started or finished
+                    return;
+                }
+
                 // plan distribution of query
                 planDistribution(plan);
 

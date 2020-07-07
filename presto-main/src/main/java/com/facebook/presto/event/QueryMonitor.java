@@ -427,7 +427,9 @@ public class QueryMonitor
 
             // planning duration -- start to end of planning
             long planning = queryStats.getTotalPlanningTime().toMillis();
-
+            long planningPlan = queryStats.getTotalPlaningPlanTime().toMillis();
+            long planningPlanDistribution = queryStats.getTotalPlanningPlanDistributionTime().toMillis();
+            long analysis = queryStats.getAnalysisTime().toMillis();
             List<StageInfo> stages = getAllStages(queryInfo.getOutputStage());
             // long lastSchedulingCompletion = 0;
             long firstTaskStartTime = queryEndTime.getMillis();
@@ -469,6 +471,9 @@ public class QueryMonitor
                     queryInfo.getSession().getTransactionId().map(TransactionId::toString).orElse(""),
                     elapsed,
                     planning,
+                    planningPlan,
+                    planningPlanDistribution,
+                    analysis,
                     scheduling,
                     running,
                     finishing,
@@ -500,6 +505,9 @@ public class QueryMonitor
                 0,
                 0,
                 0,
+                0,
+                0,
+                0,
                 queryStartTime,
                 queryEndTime);
     }
@@ -509,17 +517,23 @@ public class QueryMonitor
             String transactionId,
             long elapsedMillis,
             long planningMillis,
+            long planningPlanMillis,
+            long planningPlanDistributionMillis,
+            long analysisMillis,
             long schedulingMillis,
             long runningMillis,
             long finishingMillis,
             DateTime queryStartTime,
             DateTime queryEndTime)
     {
-        log.info("TIMELINE: Query %s :: Transaction:[%s] :: elapsed %sms :: planning %sms :: scheduling %sms :: running %sms :: finishing %sms :: begin %s :: end %s",
+        log.info("TIMELINE: Query %s :: Transaction:[%s] :: elapsed %sms :: planning %sms :: planningPlan %sms :: planningPlanDist %sms :: analysis %sms :: scheduling %sms :: running %sms :: finishing %sms :: begin %s :: end %s",
                 queryId,
                 transactionId,
                 elapsedMillis,
                 planningMillis,
+                planningPlanMillis,
+                planningPlanDistributionMillis,
+                analysisMillis,
                 schedulingMillis,
                 runningMillis,
                 finishingMillis,

@@ -113,6 +113,8 @@ public class TestQueryStateInfo
                         Duration.valueOf("35m"),
                         Duration.valueOf("44m"),
                         Duration.valueOf("9m"),
+                        Duration.valueOf("5m"),
+                        Duration.valueOf("4m"),
                         Duration.valueOf("10m"),
                         Duration.valueOf("11m"),
                         13,

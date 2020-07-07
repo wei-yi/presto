@@ -52,6 +52,8 @@ public class QueryStats
     private final Duration executionTime;
     private final Duration analysisTime;
     private final Duration totalPlanningTime;
+    private final Duration totalPlaningPlanTime;
+    private final Duration totalPlanningPlanDistributionTime;
     private final Duration finishingTime;
 
     private final int totalTasks;
@@ -116,6 +118,8 @@ public class QueryStats
             @JsonProperty("executionTime") Duration executionTime,
             @JsonProperty("analysisTime") Duration analysisTime,
             @JsonProperty("totalPlanningTime") Duration totalPlanningTime,
+            @JsonProperty("totalPlaningPlanTime") Duration totalPlaningPlanTime,
+            @JsonProperty("totalPlanningPlanDistributionTime") Duration totalPlanningPlanDistributionTime,
             @JsonProperty("finishingTime") Duration finishingTime,
 
             @JsonProperty("totalTasks") int totalTasks,
@@ -178,6 +182,9 @@ public class QueryStats
         this.executionTime = requireNonNull(executionTime, "executionTime is null");
         this.analysisTime = requireNonNull(analysisTime, "analysisTime is null");
         this.totalPlanningTime = requireNonNull(totalPlanningTime, "totalPlanningTime is null");
+        this.totalPlaningPlanTime = requireNonNull(totalPlaningPlanTime, "totalPlaningPlanTime is null");
+        this.totalPlanningPlanDistributionTime = requireNonNull(totalPlanningPlanDistributionTime, "totalPlanningPlanDistributionTime is null");
+
         this.finishingTime = requireNonNull(finishingTime, "finishingTime is null");
 
         checkArgument(totalTasks >= 0, "totalTasks is negative");
@@ -248,6 +255,8 @@ public class QueryStats
                 now,
                 now,
                 now,
+                new Duration(0, MILLISECONDS),
+                new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),
@@ -359,6 +368,16 @@ public class QueryStats
     public Duration getTotalPlanningTime()
     {
         return totalPlanningTime;
+    }
+
+    public Duration getTotalPlaningPlanTime()
+    {
+        return totalPlaningPlanTime;
+    }
+
+    public Duration getTotalPlanningPlanDistributionTime()
+    {
+        return totalPlanningPlanDistributionTime;
     }
 
     @JsonProperty

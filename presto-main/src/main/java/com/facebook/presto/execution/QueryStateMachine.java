@@ -576,6 +576,8 @@ public class QueryStateMachine
                 queryStateTimer.getExecutionTime(),
                 queryStateTimer.getAnalysisTime(),
                 queryStateTimer.getPlanningTime(),
+                queryStateTimer.getPlanningPlanTime(),
+                queryStateTimer.getPlanningPlanDistribution(),
                 queryStateTimer.getFinishingTime(),
 
                 totalTasks,
@@ -775,6 +777,12 @@ public class QueryStateMachine
     }
 
     public boolean transitionToPlanning()
+    {
+        queryStateTimer.beginPlanning();
+        return queryState.setIf(PLANNING, currentState -> currentState.ordinal() < PLANNING.ordinal());
+    }
+
+    public boolean transitionToPlanningPlanDistribution()
     {
         queryStateTimer.beginPlanning();
         return queryState.setIf(PLANNING, currentState -> currentState.ordinal() < PLANNING.ordinal());
@@ -1085,6 +1093,8 @@ public class QueryStateMachine
                 queryStats.getExecutionTime(),
                 queryStats.getAnalysisTime(),
                 queryStats.getTotalPlanningTime(),
+                queryStats.getTotalPlaningPlanTime(),
+                queryStats.getTotalPlanningPlanDistributionTime(),
                 queryStats.getFinishingTime(),
                 queryStats.getTotalTasks(),
                 queryStats.getRunningTasks(),
