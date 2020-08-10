@@ -575,6 +575,13 @@ public class QueryStateMachine
                 queryStateTimer.getDispatchingTime(),
                 queryStateTimer.getExecutionTime(),
                 queryStateTimer.getAnalysisTime(),
+                queryStateTimer.getAnalysisLogicalPlannerTime(),
+                queryStateTimer.getAnalysisExtractInputsTime(),
+                queryStateTimer.getAnalysisExtractOutputTime(),
+                queryStateTimer.getAnalysisFragmentedPlanTime(),
+                queryStateTimer.getPlanDistSplitSourceTime(),
+                queryStateTimer.getBuildStageSchedulerTime(),
+
                 queryStateTimer.getPlanningTime(),
                 queryStateTimer.getPlanningPlanTime(),
                 queryStateTimer.getPlanningPlanDistribution(),
@@ -784,8 +791,9 @@ public class QueryStateMachine
 
     public boolean transitionToPlanningPlanDistribution()
     {
-        queryStateTimer.beginPlanning();
-        return queryState.setIf(PLANNING, currentState -> currentState.ordinal() < PLANNING.ordinal());
+        queryStateTimer.beginPlanningPlanDistribution();
+        // no check state
+        return true;
     }
 
     public boolean transitionToStarting()
@@ -967,6 +975,66 @@ public class QueryStateMachine
         queryStateTimer.endAnalysis();
     }
 
+    public void beginAnalysisLogicalPlanner()
+    {
+        queryStateTimer.beginAnalyzingLogicalPlanner();
+    }
+
+    public void endAnalysisLogicalPlanner()
+    {
+        queryStateTimer.endAnalysisLogicalPlanner();
+    }
+
+    public void beginAnalysisExtractInputs()
+    {
+        queryStateTimer.beginAnalyzingExtractInputs();
+    }
+
+    public void endAnalysisExtractInputs()
+    {
+        queryStateTimer.endAnalysisExtractInputs();
+    }
+
+    public void beginAnalysisExtractOutput()
+    {
+        queryStateTimer.beginAnalyzingExtractOutput();
+    }
+
+    public void endAnalysisExtractOutput()
+    {
+        queryStateTimer.endAnalysisExtractOutput();
+    }
+
+    public void beginAnalysisFragmentedPlan()
+    {
+        queryStateTimer.beginAnalyzingFragmentedPlan();
+    }
+
+    public void endAnalysisFragmentedPlan()
+    {
+        queryStateTimer.endAnalysisFragmentedPlan();
+    }
+
+    public void beginPlanDistSplitSource()
+    {
+        queryStateTimer.beginPlanDistSplitSource();
+    }
+
+    public void endPlanDistSplitSource()
+    {
+        queryStateTimer.endPlanDistSplitSource();
+    }
+
+    public void beginBuildStageScheduler()
+    {
+        queryStateTimer.beginBuildStageScheduler();
+    }
+
+    public void endBuildStageScheduler()
+    {
+        queryStateTimer.endBuildStageScheduler();
+    }
+
     public DateTime getCreateTime()
     {
         return queryStateTimer.getCreateTime();
@@ -1092,6 +1160,12 @@ public class QueryStateMachine
                 queryStats.getDispatchingTime(),
                 queryStats.getExecutionTime(),
                 queryStats.getAnalysisTime(),
+                queryStats.getAnalysisLogicalPlannerTime(),
+                queryStats.getAnalysisExtractInputsTime(),
+                queryStats.getAnalysisExtractOutputTime(),
+                queryStats.getAnalysisFragmentedPlanTime(),
+                queryStats.getPlanDistSplitSourceTimeTime(),
+                queryStats.getBuildStageSchedulerTime(),
                 queryStats.getTotalPlanningTime(),
                 queryStats.getTotalPlaningPlanTime(),
                 queryStats.getTotalPlanningPlanDistributionTime(),

@@ -52,7 +52,20 @@ class QueryStateTimer
     private final AtomicReference<Duration> finishingTime = new AtomicReference<>();
 
     private final AtomicReference<Long> beginAnalysisNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginAnalysisLogicalPlannerNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginAnalysisExtractInputsNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginAnalysisExtractOutputNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginAnalysisFragmentedPlanNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginPlanDistSplitSourceNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginBuildStageSchedulerNanos = new AtomicReference<>();
+
     private final AtomicReference<Duration> analysisTime = new AtomicReference<>();
+    private final AtomicReference<Duration> analysisLogicalPlannerTime = new AtomicReference<>();
+    private final AtomicReference<Duration> analysisExtractInputsTime = new AtomicReference<>();
+    private final AtomicReference<Duration> analysisExtractOutputTime = new AtomicReference<>();
+    private final AtomicReference<Duration> analysisFragmentedPlanTime = new AtomicReference<>();
+    private final AtomicReference<Duration> planDistSplitSourceTime = new AtomicReference<>();
+    private final AtomicReference<Duration> buildStageSchedulerTime = new AtomicReference<>();
 
     private final AtomicReference<Long> lastHeartbeatNanos;
 
@@ -122,6 +135,7 @@ class QueryStateTimer
     private void beginStarting(long now)
     {
         beginPlanning(now);
+        beginPlanningPlanDistributionNanos.compareAndSet(null, now);
         planningTime.compareAndSet(null, nanosSince(beginPlanningNanos, now));
         planningPlanDistribution.compareAndSet(null, nanosSince(beginPlanningPlanDistributionNanos, now));
     }
@@ -172,6 +186,66 @@ class QueryStateTimer
     public void endAnalysis()
     {
         analysisTime.compareAndSet(null, nanosSince(beginAnalysisNanos, tickerNanos()));
+    }
+
+    public void beginAnalyzingLogicalPlanner()
+    {
+        beginAnalysisLogicalPlannerNanos.compareAndSet(null, tickerNanos());
+    }
+
+    public void endAnalysisLogicalPlanner()
+    {
+        analysisLogicalPlannerTime.compareAndSet(null, nanosSince(beginAnalysisLogicalPlannerNanos, tickerNanos()));
+    }
+
+    public void beginAnalyzingExtractInputs()
+    {
+        beginAnalysisExtractInputsNanos.compareAndSet(null, tickerNanos());
+    }
+
+    public void endAnalysisExtractInputs()
+    {
+        analysisExtractInputsTime.compareAndSet(null, nanosSince(beginAnalysisExtractInputsNanos, tickerNanos()));
+    }
+
+    public void beginAnalyzingExtractOutput()
+    {
+        beginAnalysisExtractOutputNanos.compareAndSet(null, tickerNanos());
+    }
+
+    public void endAnalysisExtractOutput()
+    {
+        analysisExtractOutputTime.compareAndSet(null, nanosSince(beginAnalysisExtractOutputNanos, tickerNanos()));
+    }
+
+    public void beginAnalyzingFragmentedPlan()
+    {
+        beginAnalysisFragmentedPlanNanos.compareAndSet(null, tickerNanos());
+    }
+
+    public void endAnalysisFragmentedPlan()
+    {
+        analysisFragmentedPlanTime.compareAndSet(null, nanosSince(beginAnalysisFragmentedPlanNanos, tickerNanos()));
+    }
+
+    public void beginPlanDistSplitSource()
+    {
+        beginPlanDistSplitSourceNanos.compareAndSet(null, tickerNanos());
+    }
+
+    public void endPlanDistSplitSource()
+    {
+        planDistSplitSourceTime.compareAndSet(null, nanosSince(beginPlanDistSplitSourceNanos, tickerNanos()));
+    }
+
+    public void beginBuildStageScheduler()
+    {
+        beginBuildStageSchedulerNanos.compareAndSet(null, tickerNanos());
+    }
+
+    public void endBuildStageScheduler()
+    {
+        buildStageSchedulerTime.compareAndSet(null, nanosSince(beginBuildStageSchedulerNanos, tickerNanos()));
     }
 
     public void recordHeartbeat()
@@ -255,6 +329,36 @@ class QueryStateTimer
     public Duration getAnalysisTime()
     {
         return getDuration(analysisTime, beginAnalysisNanos);
+    }
+
+    public Duration getAnalysisLogicalPlannerTime()
+    {
+        return getDuration(analysisLogicalPlannerTime, beginAnalysisLogicalPlannerNanos);
+    }
+
+    public Duration getAnalysisExtractInputsTime()
+    {
+        return getDuration(analysisExtractInputsTime, beginAnalysisExtractInputsNanos);
+    }
+
+    public Duration getAnalysisExtractOutputTime()
+    {
+        return getDuration(analysisExtractOutputTime, beginAnalysisExtractOutputNanos);
+    }
+
+    public Duration getAnalysisFragmentedPlanTime()
+    {
+        return getDuration(analysisFragmentedPlanTime, beginAnalysisFragmentedPlanNanos);
+    }
+
+    public Duration getPlanDistSplitSourceTime()
+    {
+        return getDuration(planDistSplitSourceTime, beginPlanDistSplitSourceNanos);
+    }
+
+    public Duration getBuildStageSchedulerTime()
+    {
+        return getDuration(buildStageSchedulerTime, beginBuildStageSchedulerNanos);
     }
 
     public DateTime getLastHeartbeat()

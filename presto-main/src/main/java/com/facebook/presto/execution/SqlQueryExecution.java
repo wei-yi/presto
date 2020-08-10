@@ -378,19 +378,44 @@ public class SqlQueryExecution
         // plan query
         PlanNodeIdAllocator idAllocator = new PlanNodeIdAllocator();
         LogicalPlanner logicalPlanner = new LogicalPlanner(false, stateMachine.getSession(), planOptimizers, idAllocator, metadata, sqlParser, statsCalculator, costCalculator, stateMachine.getWarningCollector());
+
+        // time analysis logical planner
+        stateMachine.beginAnalysisLogicalPlanner();
+
         Plan plan = logicalPlanner.plan(analysis);
         queryPlan.set(plan);
+
+        // record analysis logical planner
+        stateMachine.endAnalysisLogicalPlanner();
+
+        // time analysis extract inputs
+        stateMachine.beginAnalysisExtractInputs();
 
         // extract inputs
         List<Input> inputs = new InputExtractor(metadata, stateMachine.getSession()).extractInputs(plan.getRoot());
         stateMachine.setInputs(inputs);
 
+        // record analysis extract inputs
+        stateMachine.endAnalysisExtractInputs();
+
+        // time analysis extract output
+        stateMachine.beginAnalysisExtractOutput();
+
         // extract output
         Optional<Output> output = new OutputExtractor().extractOutput(plan.getRoot());
         stateMachine.setOutput(output);
 
+        // record analysis extract output
+        stateMachine.endAnalysisExtractOutput();
+
+        // time fragment the plan
+        stateMachine.beginAnalysisFragmentedPlan();
+
         // fragment the plan
         SubPlan fragmentedPlan = planFragmenter.createSubPlans(stateMachine.getSession(), plan, false, idAllocator, stateMachine.getWarningCollector());
+
+        // record fragment the plan
+        stateMachine.endAnalysisFragmentedPlan();
 
         // record analysis time
         stateMachine.endAnalysis();
@@ -417,7 +442,11 @@ public class SqlQueryExecution
 
     private void planDistribution(PlanRoot plan)
     {
+        // begin split source  build
+        stateMachine.beginPlanDistSplitSource();
         CloseableSplitSourceProvider splitSourceProvider = new CloseableSplitSourceProvider(splitManager::getSplits);
+        // record end time
+        stateMachine.endPlanDistSplitSource();
 
         // ensure split sources are closed
         stateMachine.addStateChangeListener(state -> {
@@ -442,6 +471,8 @@ public class SqlQueryExecution
                 .withNoMoreBufferIds();
 
         SplitSourceFactory splitSourceFactory = new SplitSourceFactory(splitSourceProvider);
+         //build the stage start
+        stateMachine.beginBuildStageScheduler();
         // build the stage execution objects (this doesn't schedule execution)
         SqlQuerySchedulerInterface scheduler = isUseLegacyScheduler(getSession()) ?
                 LegacySqlQueryScheduler.createSqlQueryScheduler(
@@ -470,6 +501,7 @@ public class SqlQueryExecution
                         stateMachine,
                         outputStagePlan,
                         plan.isSummarizeTaskInfos());
+        stateMachine.endBuildStageScheduler();
 
         queryScheduler.set(scheduler);
 

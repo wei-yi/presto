@@ -430,6 +430,12 @@ public class QueryMonitor
             long planningPlan = queryStats.getTotalPlaningPlanTime().toMillis();
             long planningPlanDistribution = queryStats.getTotalPlanningPlanDistributionTime().toMillis();
             long analysis = queryStats.getAnalysisTime().toMillis();
+            long analysisLogicalPlanner = queryStats.getAnalysisLogicalPlannerTime().toMillis();
+            long analysisExtractInputs = queryStats.getAnalysisExtractInputsTime().toMillis();
+            long analysisExtractOutput = queryStats.getAnalysisExtractOutputTime().toMillis();
+            long analysisFragmentedPlan = queryStats.getAnalysisFragmentedPlanTime().toMillis();
+            long planDistSplitSource = queryStats.getPlanDistSplitSourceTimeTime().toMillis();
+            long buildStageSchedulerTime = queryStats.getBuildStageSchedulerTime().toMillis();
             List<StageInfo> stages = getAllStages(queryInfo.getOutputStage());
             // long lastSchedulingCompletion = 0;
             long firstTaskStartTime = queryEndTime.getMillis();
@@ -474,6 +480,12 @@ public class QueryMonitor
                     planningPlan,
                     planningPlanDistribution,
                     analysis,
+                    analysisLogicalPlanner,
+                    analysisExtractInputs,
+                    analysisExtractOutput,
+                    analysisFragmentedPlan,
+                    planDistSplitSource,
+                    buildStageSchedulerTime,
                     scheduling,
                     running,
                     finishing,
@@ -508,6 +520,12 @@ public class QueryMonitor
                 0,
                 0,
                 0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
                 queryStartTime,
                 queryEndTime);
     }
@@ -520,13 +538,19 @@ public class QueryMonitor
             long planningPlanMillis,
             long planningPlanDistributionMillis,
             long analysisMillis,
+            long analysisLogicalPlannerMillis,
+            long analysisExtractInputsMillis,
+            long analysisExtractOutputMillis,
+            long analysisFragmentedPlanMillis,
+            long planDistSplitSourceMillis,
+            long buildStageSchedulerTimeMillis,
             long schedulingMillis,
             long runningMillis,
             long finishingMillis,
             DateTime queryStartTime,
             DateTime queryEndTime)
     {
-        log.info("TIMELINE: Query %s :: Transaction:[%s] :: elapsed %sms :: planning %sms :: planningPlan %sms :: planningPlanDist %sms :: analysis %sms :: scheduling %sms :: running %sms :: finishing %sms :: begin %s :: end %s",
+        log.info("TIMELINE: Query %s :: Transaction:[%s] :: elapsed %sms :: planning %sms :: planningPlan %sms :: planningPlanDist %sms :: analysis %sms :: analysisLogicalPlanner %sms :: analysisExtractInputs %sms :: analysisExtractOutput %sms :: analysisFragmentedPlan %sms :: planDistSplitSource %sms :: buildStageScheduler %sms :: scheduling %sms :: running %sms :: finishing %sms :: begin %s :: end %s",
                 queryId,
                 transactionId,
                 elapsedMillis,
@@ -534,6 +558,12 @@ public class QueryMonitor
                 planningPlanMillis,
                 planningPlanDistributionMillis,
                 analysisMillis,
+                analysisLogicalPlannerMillis,
+                analysisExtractInputsMillis,
+                analysisExtractOutputMillis,
+                analysisFragmentedPlanMillis,
+                planDistSplitSourceMillis,
+                buildStageSchedulerTimeMillis,
                 schedulingMillis,
                 runningMillis,
                 finishingMillis,

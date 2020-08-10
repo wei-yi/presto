@@ -51,6 +51,13 @@ public class QueryStats
     private final Duration dispatchingTime;
     private final Duration executionTime;
     private final Duration analysisTime;
+    private final Duration analysisLogicalPlannerTime;
+    private final Duration analysisExtractInputsTime;
+    private final Duration analysisExtractOutputTime;
+    private final Duration analysisFragmentedPlanTime;
+    private final Duration planDistSplitSourceTimeTime;
+    private final Duration buildStageSchedulerTime;
+
     private final Duration totalPlanningTime;
     private final Duration totalPlaningPlanTime;
     private final Duration totalPlanningPlanDistributionTime;
@@ -117,6 +124,12 @@ public class QueryStats
             @JsonProperty("dispatchingTime") Duration dispatchingTime,
             @JsonProperty("executionTime") Duration executionTime,
             @JsonProperty("analysisTime") Duration analysisTime,
+            @JsonProperty("analysisLogicalPlannerTime") Duration analysisLogicalPlannerTime,
+            @JsonProperty("analysisExtractInputsTime") Duration analysisExtractInputsTime,
+            @JsonProperty("analysisExtractOutputTime") Duration analysisExtractOutputTime,
+            @JsonProperty("analysisFragmentedPlanTime") Duration analysisFragmentedPlanTime,
+            @JsonProperty("planDistSplitSourceTimeTime") Duration planDistSplitSourceTimeTime,
+            @JsonProperty("buildStageSchedulerTime") Duration buildStageSchedulerTime,
             @JsonProperty("totalPlanningTime") Duration totalPlanningTime,
             @JsonProperty("totalPlaningPlanTime") Duration totalPlaningPlanTime,
             @JsonProperty("totalPlanningPlanDistributionTime") Duration totalPlanningPlanDistributionTime,
@@ -181,6 +194,13 @@ public class QueryStats
         this.dispatchingTime = requireNonNull(dispatchingTime, "dispatchingTime is null");
         this.executionTime = requireNonNull(executionTime, "executionTime is null");
         this.analysisTime = requireNonNull(analysisTime, "analysisTime is null");
+        this.analysisLogicalPlannerTime = requireNonNull(analysisLogicalPlannerTime, "analysisLogicalPlannerTime is null");
+        this.analysisExtractInputsTime = requireNonNull(analysisExtractInputsTime, "analysisExtractInputsTime is null");
+        this.analysisExtractOutputTime = requireNonNull(analysisExtractOutputTime, "analysisExtractOutputTime is null");
+        this.analysisFragmentedPlanTime = requireNonNull(analysisFragmentedPlanTime, "analysisFragmentedPlanTime is null");
+        this.planDistSplitSourceTimeTime = requireNonNull(planDistSplitSourceTimeTime, "planDistSplitSourceTimeTime is null");
+        this.buildStageSchedulerTime = requireNonNull(buildStageSchedulerTime, "buildStageSchedulerTime is null");
+
         this.totalPlanningTime = requireNonNull(totalPlanningTime, "totalPlanningTime is null");
         this.totalPlaningPlanTime = requireNonNull(totalPlaningPlanTime, "totalPlaningPlanTime is null");
         this.totalPlanningPlanDistributionTime = requireNonNull(totalPlanningPlanDistributionTime, "totalPlanningPlanDistributionTime is null");
@@ -255,6 +275,12 @@ public class QueryStats
                 now,
                 now,
                 now,
+                new Duration(0, MILLISECONDS),
+                new Duration(0, MILLISECONDS),
+                new Duration(0, MILLISECONDS),
+                new Duration(0, MILLISECONDS),
+                new Duration(0, MILLISECONDS),
+                new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),
@@ -362,6 +388,42 @@ public class QueryStats
     public Duration getAnalysisTime()
     {
         return analysisTime;
+    }
+
+    @JsonProperty
+    public Duration getAnalysisLogicalPlannerTime()
+    {
+        return analysisLogicalPlannerTime;
+    }
+
+    @JsonProperty
+    public Duration getAnalysisExtractInputsTime()
+    {
+        return analysisExtractInputsTime;
+    }
+
+    @JsonProperty
+    public Duration getAnalysisExtractOutputTime()
+    {
+        return analysisExtractOutputTime;
+    }
+
+    @JsonProperty
+    public Duration getAnalysisFragmentedPlanTime()
+    {
+        return analysisFragmentedPlanTime;
+    }
+
+    @JsonProperty
+    public Duration getPlanDistSplitSourceTimeTime()
+    {
+        return planDistSplitSourceTimeTime;
+    }
+
+    @JsonProperty
+    public Duration getBuildStageSchedulerTime()
+    {
+        return buildStageSchedulerTime;
     }
 
     @JsonProperty
